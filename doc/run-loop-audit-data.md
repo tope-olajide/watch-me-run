@@ -8,32 +8,32 @@ everything that arrives together — one choice — rather than one obstacle.
 
 | World | Rows/100m | Actionable/100m | Coins/100m | Median window | Median dead air | Lane-change rows (min) | Two-lane rows | Trapped rows | Required-time violations |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| desert | 3.5 | 1.5 | 13.1 | 1.83s | 3.12s | 5.2 (0.87s) | 0.00 | 0 | 0 |
-| city | 3.9 | 1.6 | 14.2 | 2.15s | 3.50s | 5.7 (1.07s) | 0.00 | 0 | 0 |
-| forest | 3.7 | 1.5 | 13.6 | 2.03s | 3.45s | 5.2 (0.98s) | 0.00 | 0 | 0 |
+| desert | 3.5 | 1.5 | 13.1 | 1.83s | 3.12s | 4.7 (0.87s) | 0.00 | 0 | 0 |
+| city | 3.9 | 1.6 | 14.2 | 2.15s | 3.45s | 5.8 (1.07s) | 0.00 | 0 | 0 |
+| forest | 3.7 | 1.5 | 13.6 | 2.03s | 3.47s | 5.2 (0.98s) | 0.00 | 0 | 0 |
 
 ## Window by pattern shape
 
 | World | Shape | Rows/run | min | p10 | median | Under 0.35s | Violations |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| desert | gauntlet | 17.5 | 0.87s | 0.88s | 0.88s | 0 | 0 |
-| desert | tunnel | 7.3 | 0.93s | 0.93s | 2.13s | 0 | 0 |
-| desert | slalom | 6.1 | 0.93s | 0.93s | 0.95s | 0 | 0 |
-| desert | arc | 3.3 | 1.23s | 1.65s | 2.25s | 0 | 0 |
-| desert | single | 6.3 | 1.23s | 1.82s | 2.58s | 0 | 0 |
-| desert | pair | 12.4 | 1.35s | 1.77s | 2.18s | 0 | 0 |
-| city | gauntlet | 18.7 | 1.07s | 1.07s | 1.08s | 0 | 0 |
-| city | tunnel | 7.6 | 1.13s | 1.13s | 2.13s | 0 | 0 |
-| city | slalom | 7.5 | 1.13s | 1.13s | 1.15s | 0 | 0 |
-| city | single | 6.3 | 1.50s | 1.82s | 2.68s | 0 | 0 |
+| desert | gauntlet | 17.2 | 0.87s | 0.88s | 0.88s | 0 | 0 |
+| desert | tunnel | 7.4 | 0.93s | 0.93s | 2.10s | 0 | 0 |
+| desert | slalom | 6.4 | 0.93s | 0.93s | 0.95s | 0 | 0 |
+| desert | single | 6.4 | 1.23s | 1.82s | 2.60s | 0 | 0 |
+| desert | arc | 3.4 | 1.23s | 1.67s | 2.27s | 0 | 0 |
+| desert | pair | 12.2 | 1.35s | 1.77s | 2.13s | 0 | 0 |
+| city | gauntlet | 19.1 | 1.07s | 1.07s | 1.08s | 0 | 0 |
+| city | tunnel | 7.7 | 1.13s | 1.13s | 2.22s | 0 | 0 |
+| city | slalom | 6.8 | 1.13s | 1.13s | 1.15s | 0 | 0 |
+| city | single | 6.2 | 1.50s | 1.80s | 2.67s | 0 | 0 |
 | city | arc | 3.3 | 1.50s | 1.72s | 2.43s | 0 | 0 |
-| city | pair | 14.8 | 1.63s | 2.15s | 2.43s | 0 | 0 |
-| forest | gauntlet | 18.1 | 0.98s | 0.98s | 1.00s | 0 | 0 |
-| forest | tunnel | 7.6 | 1.05s | 1.05s | 2.35s | 0 | 0 |
-| forest | slalom | 6.5 | 1.05s | 1.05s | 1.07s | 0 | 0 |
-| forest | single | 6.2 | 1.37s | 1.98s | 3.28s | 0 | 0 |
-| forest | arc | 3.4 | 1.37s | 1.75s | 2.48s | 0 | 0 |
-| forest | pair | 13.3 | 1.50s | 1.98s | 2.40s | 0 | 0 |
+| city | pair | 14.9 | 1.63s | 2.15s | 2.42s | 0 | 0 |
+| forest | gauntlet | 17.6 | 0.98s | 0.98s | 1.00s | 0 | 0 |
+| forest | tunnel | 7.6 | 1.05s | 1.05s | 2.40s | 0 | 0 |
+| forest | slalom | 7.3 | 1.05s | 1.05s | 1.07s | 0 | 0 |
+| forest | arc | 3.3 | 1.37s | 1.73s | 2.47s | 0 | 0 |
+| forest | single | 6.3 | 1.38s | 1.87s | 3.12s | 0 | 0 |
+| forest | pair | 13.2 | 1.50s | 1.98s | 2.40s | 0 | 0 |
 
 ## Two-lane rows
 
@@ -54,9 +54,9 @@ Rows / actions / mean window per 200 m band.
 
 | World | 0m | 200m | 400m | 600m | 800m | 1000m | 1200m | 1400m |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| desert | 3.0 / 1.0 / 3.77s | 2.6 / 1.0 / 2.30s | 3.6 / 1.4 / 1.63s | 3.5 / 1.6 / 1.68s | 3.7 / 1.6 / 1.58s | 3.8 / 1.6 / 1.53s | 3.7 / 1.6 / 1.59s | 3.9 / 1.7 / 1.54s |
-| city | 3.0 / 1.1 / 3.84s | 3.8 / 1.4 / 2.11s | 3.8 / 1.7 / 1.86s | 4.0 / 1.8 / 1.78s | 4.0 / 1.7 / 1.81s | 4.0 / 1.8 / 1.81s | 4.0 / 1.8 / 1.76s | 3.9 / 1.7 / 1.80s |
-| forest | 3.0 / 1.0 / 4.16s | 3.2 / 1.2 / 2.82s | 3.7 / 1.5 / 1.95s | 3.7 / 1.6 / 1.75s | 3.9 / 1.7 / 1.68s | 3.8 / 1.8 / 1.70s | 4.0 / 1.6 / 1.64s | 3.9 / 1.7 / 1.67s |
+| desert | 3.0 / 0.9 / 3.77s | 2.6 / 0.9 / 2.33s | 3.6 / 1.4 / 1.64s | 3.6 / 1.6 / 1.67s | 3.8 / 1.7 / 1.56s | 3.7 / 1.6 / 1.58s | 3.8 / 1.5 / 1.51s | 3.8 / 1.6 / 1.54s |
+| city | 3.0 / 1.0 / 3.83s | 3.8 / 1.4 / 2.13s | 3.8 / 1.7 / 1.86s | 4.0 / 1.8 / 1.78s | 4.0 / 1.7 / 1.80s | 4.0 / 1.7 / 1.78s | 4.0 / 1.8 / 1.81s | 4.1 / 1.8 / 1.74s |
+| forest | 3.0 / 0.9 / 4.15s | 3.3 / 1.1 / 2.78s | 3.8 / 1.6 / 1.90s | 3.8 / 1.6 / 1.78s | 3.9 / 1.7 / 1.70s | 4.0 / 1.6 / 1.66s | 3.8 / 1.6 / 1.71s | 3.8 / 1.7 / 1.75s |
 
 ## Reward curve
 
@@ -65,9 +65,9 @@ is the half of the curve that rises with distance.
 
 | World | Value at the line | Value at the content peak | Coin points/100 m, first band | last band |
 | --- | --- | --- | --- | --- |
-| desert | 25 | 75 | 376 | 1037 |
-| city | 25 | 75 | 383 | 1077 |
-| forest | 25 | 75 | 382 | 1051 |
+| desert | 25 | 75 | 379 | 1013 |
+| city | 25 | 75 | 381 | 1106 |
+| forest | 25 | 75 | 383 | 1028 |
 
 Coin points / run per 200 m band. The 1400 m cell is the last one a 1500 m run fills, and the band
 after it is cut short by the run ending — which is why the reward-curve summary above stops at the
@@ -75,17 +75,17 @@ last *full* band.
 
 | World | 0m | 200m | 400m | 600m | 800m | 1000m | 1200m | 1400m |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| desert | 822 | 1037 | 1386 | 1729 | 2081 | 2037 | 2064 | 1037 |
-| city | 924 | 1502 | 1985 | 2189 | 2158 | 2157 | 2166 | 1078 |
-| forest | 867 | 1165 | 1587 | 2009 | 2117 | 2095 | 2132 | 1051 |
+| desert | 827 | 1040 | 1363 | 1776 | 2066 | 2065 | 2055 | 1017 |
+| city | 919 | 1507 | 2013 | 2187 | 2164 | 2119 | 2184 | 1109 |
+| forest | 868 | 1196 | 1545 | 2028 | 2150 | 2090 | 2117 | 1031 |
 
 ## Moves asked for
 
 | World | jump | slide | dodge | free | Mean speed | Coins needing a jump | Coins on the safe route | Coins behind a wall | Coins that bait a wall |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| desert | 2086 | 1482 | 1047 | 7032 | 15.7 m/s | 19% | 37% | 0 | 0 |
-| city | 1521 | 2508 | 1132 | 7590 | 13.2 m/s | 16% | 38% | 0 | 0 |
-| forest | 2209 | 1528 | 1049 | 7278 | 13.5 m/s | 19% | 37% | 0 | 0 |
+| desert | 2100 | 1474 | 949 | 7034 | 15.7 m/s | 20% | 38% | 0 | 0 |
+| city | 1546 | 2433 | 1155 | 7607 | 13.2 m/s | 16% | 38% | 0 | 0 |
+| forest | 2213 | 1511 | 1039 | 7312 | 13.5 m/s | 19% | 37% | 0 | 0 |
 
 ## Worst violations
 

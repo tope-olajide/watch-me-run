@@ -1589,10 +1589,14 @@ the loader resolves a clip by bone name, which was the swap's one real risk. Ver
 against three's own lookup (`PropertyBinding.parseTrackName` + `findNode`): all 15 clips bind their
 entire track set to their own rig — zero unresolved tracks. The legacy `xbot` set was run through the
 same check as a control and also reported 53/53, so the check itself is sound.
-- **The clips carry the same motions as the legacy set.** Durations match to the millisecond for
-running (0.633 s), jumping (0.867 s) and sliding (1.533 s), and the same
-23 of 53 tracks move in `jumping`, 43 in `sliding`. That is why `RUN_CYCLE_SPEED` in
-`RunnerCharacter.tsx` did not need retuning.
+- **The clips carry the same motions as the legacy set, at their source lengths.** The same 23 of 53
+tracks move in `jumping`, 43 in `sliding`, and baking preserves every duration exactly — the FBX and
+the GLB agree to the millisecond on all 15 clips. Running is 0.633 s on every runner, the value
+`RUN_CYCLE_SPEED` in `RunnerCharacter.tsx` is tuned against, which is why it did not need retuning;
+`jumping` (0.767–0.933 s) and `sliding` (1.167–1.533 s) are trimmed a little differently per runner
+in the sources, and nothing reads those lengths — jump, slide and stumble play once and clamp, and
+the next crossfade cuts them. (The earlier version of this note claimed all three durations matched the
+legacy set on every runner; `running` does, on all three, and `jumping` and `sliding` do not.)
 - **Wiring is two files:** `src/game/character-catalog.ts` (ids and labels) and
 `src/game/RunnerCharacter.tsx` (the `?url` imports and the mixer); `CharacterPreview`, `RunnerScene`,
 `MenuExperience`, `RunExperience` and `App` only carry the `CharacterId` type.

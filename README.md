@@ -228,8 +228,12 @@ inside that one file, named `idle`, `run`, `jump`, `slide` and `stumble`. The cl
 onto that runner's own skeleton, so a clip only ever plays on the rig it was exported for: every one
 of the 15 clips binds its whole track set to its rig (53/53 tracks for Amy and James, 47/47 for
 Mousey, checked with three's own `PropertyBinding` lookup). They are the same motions the legacy set
-used — running 0.633 s, jumping 0.867 s, sliding 1.533 s in both — so the run-cycle tuning in
-`RunnerCharacter.tsx` was left exactly as it was.
+used, and each clip keeps its source file's own length right through the conversion — the FBX and the
+GLB agree to the millisecond on all 15. Running is 0.633 s on every runner, which is the value the
+cycle is tuned against in `RunnerCharacter.tsx`, so that tuning was left exactly as it was; jumping
+and sliding are trimmed a little differently per runner (0.767–0.933 s and 1.167–1.533 s), and since
+both play once and clamp, their length only decides how long the pose holds before the next
+crossfade.
 
 Two files carry the wiring: `src/game/character-catalog.ts` (ids and labels) and
 `src/game/RunnerCharacter.tsx` (the `?url` import, the mixer, the crossfades). Only the selected
