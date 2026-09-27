@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>runner FBX → GLB</title>
+  </head>
+  <body>
+    <p>Build step for the runner assets — see <code>tools/fbx-to-glb.mjs</code>.</p>
+    <script type="module">
+      import * as THREE from "three";
+      import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+      import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+      import { mergeGeometries, mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+
+      // Loads `models/characters/<runner>.fbx` and the five clips in `models/animations/`, shrinks the
+      // embedded textures, welds the duplicate vertices, and hands back one GLB per runner with all
+      // five clips inside it. `tools/fbx-to-glb.mjs` drives this page and writes the files; the page
+      // is only here because texture decoding needs a browser.
+      const params = new URLSearchParams(location.search);
+      const MODE = params.get("mode") ?? "report";
+      const ONLY = params.get("only");
+      const step = (label) => { console.log(`step ${label} @${Math.round(performance.now())}ms`); };
+      // Colour maps keep more detail than the data maps beside them, and both are cut hard from the
+      // 4096² the FBX ships: the runner is drawn at a few hundred pixels.
+      const MAX_COLOR = 1024;
+      const MAX_DATA = 512;
+
+      const RUNNERS = [
+        { id: "amy" },
+        { id: "james" },
+        { id: "mousey" },
+      ];
+      const CLIPS = { dancing: "idle", running: "run", jumping: "jump", sliding: "slide", stumbling: "stumble" };
+
+      /** Copies one group's vertices out of a non-indexed geometry. */
+      const sliceVertices = (geometry, start, count) => {
+        const result = new THREE.BufferGeometry();
+        for (const [name, attribute] of Object.entries(geometry.attributes)) {
+          const { array, itemSize, normalized } = attribute;
+          const from = start * itemSize;
+          const to = (start + count) * itemSize;
+          result.setAttribute(name, new attribute.constructor(array.slice(from, to), itemSize, normalized));
+        }
+        return result;
+      };
+
+      /**
+       * Welds a mesh's duplicate vertices. `mergeVertices` drops material groups, so a mesh that
+       * draws several materials is taken apart by group, welded piece by piece, and merged back with
+       * its groups rebuilt — which is what keeps the eyelashes material on the eyelashes.
+       */
+      const weld = (geometry) => {
+        if (geometry.index) return mergeVertices(geometry, 1e-4);
+        if (geometry.groups.length === 0) return mergeVertices(geometry, 1e-4);
+        const pieces = geometry.groups.map((group) => mergeVertices(sliceVertices(geometry, group.start, group.count), 1e-4));
+        const merged = mergeGeometries(pieces, true);
+        // Merging renumbers groups to match the piece order; the mesh's material array is indexed by
+        // the original group order, so put those indices back.
+        merged.groups.forEach((group, index) => {
+          group.materialIndex = geometry.groups[index].materialIndex;
+        });
+        return merged;
+      };
+
+      const loader = new FBXLoader();
+      const shrinkLog = [];
+      const shrunk = new Map();
+
+      /**
+       * Redraws one embedded FBX texture at a smaller size. The canvas holds the image upright and
+       * the new texture is marked `flipY = false`, because the exporter bakes a flip only for
+       * textures that ask for one — the source's own orientation is resolved here instead.
+       *
+       * Cached per source texture, size and colour space: the same image can be wanted twice (a
+       * diffuse map that is also an alpha map) and should only be encoded once.
+       */
+      const shrink = (texture, max, { invert = false, colorSpace, mime = "image/jpeg" } = {}) => {
+        if (!texture || !texture.image || !texture.image.width) return null;
+        const key = `${texture.uuid}|${max}|${invert}|${colorSpace ?? texture.colorSpace}|${mime}`;
+        if (shrunk.has(key)) return shrunk.get(key);
+
+        const image = texture.image;
+        let source = image;
+        if (texture.flipY === true) {
+          const flipped = document.createElement("canvas");
+          flipped.width = image.width;
+          flipped.height = image.height;
+          const context = flipped.getContext("2d", { willReadFrequently: true });
+          context.translate(0, image.height);
+          context.scale(1, -1);
+          context.drawImage(image, 0, 0);
+          source = flipped;
+        }
+
+        const longest = Math.max(image.width, image.height);
+        const scale = Math.min(1, max / longest);
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(source, 0, 0, width, height);
+
+        if (invert) {
+          const pixels = context.getImageData(0, 0, width, height);
+          for (let index = 0; index < pixels.data.length; index += 4) {
+            pixels.data[index] = 255 - pixels.data[index];
+            pixels.data[index + 1] = 255 - pixels.data[index + 1];
+            pixels.data[index + 2] = 255 - pixels.data[index + 2];
+          }
+          context.putImageData(pixels, 0, 0);
+        }
+
+        const next = new THREE.CanvasTexture(canvas);
+        next.name = texture.name;
+        // The exporter writes whatever this says: JPEG for colour, and PNG only where alpha matters.
+        next.userData.mimeType = mime;
+        next.flipY = false;
+        next.colorSpace = colorSpace ?? texture.colorSpace;
+        next.wrapS = texture.wrapS;
+        next.wrapT = texture.wrapT;
+        next.repeat.copy(texture.repeat);
+        next.offset.copy(texture.offset);
+        next.needsUpdate = true;
+        shrunk.set(key, next);
+        shrinkLog.push(`${texture.name || "unnamed"}: ${image.width}x${image.height} → ${width}x${height}${invert ? " (inverted)" : ""}`);
+        return next;
+      };
+
+      const report = [];
+      const files = {};
+
+      const toBase64 = (buffer) => {
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        const step = 0x8000;
+        for (let index = 0; index < bytes.length; index += step) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(index, index + step));
+        }
+        return btoa(binary);
+      };
+
+      for (const runner of RUNNERS.filter((item) => !ONLY || item.id === ONLY)) {
+        const entry = { id: runner.id };
+        step(`${runner.id}: loading character`);
+        const model = await loader.loadAsync(`/models/characters/${runner.id}.fbx`);
+        step(`${runner.id}: character loaded`);
+
+        const clips = [];
+        for (const [file, name] of Object.entries(CLIPS)) {
+          step(`${runner.id}: loading clip ${file}`);
+          const loaded = await loader.loadAsync(`/models/animations/${runner.id}@${file}.fbx`);
+          const animation = loaded.animations[0];
+          const before = animation.name;
+          animation.name = name;
+          clips.push({ name, source: file, was: before, seconds: Number(animation.duration.toFixed(3)), tracks: animation.tracks.length, animation });
+        }
+        entry.clips = clips.map(({ animation, ...rest }) => rest);
+
+        // FBX meshes arrive with a vertex per face corner, so the same position is stored many times
+        // over. Welding exact duplicates back together is where the geometry payload goes.
+        step(`${runner.id}: welding`);
+        entry.meshes = [];
+        model.traverse((object) => {
+          if (!object.isMesh || !object.geometry) return;
+          const before = { vertices: object.geometry.attributes.position?.count ?? 0, indexed: Boolean(object.geometry.index), groups: object.geometry.groups.length };
+          step(`${runner.id}: welding ${object.name} (${before.vertices} verts, ${before.groups} groups)`);
+          let welded = null;
+          try {
+            welded = weld(object.geometry);
+          } catch (error) {
+            entry.meshes.push({ ...before, error: String(error).slice(0, 120) });
+            return;
+          }
+          const after = { vertices: welded.attributes.position?.count ?? 0, indexed: Boolean(welded.index) };
+          if (MODE === "export" && after.vertices < before.vertices) {
+            object.geometry.dispose();
+            object.geometry = welded;
+          }
+          entry.meshes.push({ name: object.name, before, after: after.vertices < before.vertices ? after : null });
+        });
+
+        if (MODE === "export") {
+          // Every material becomes a physical one, so the specular lobe survives as
+          // KHR_materials_specular instead of being approximated by a roughness map: the FBX's
+          // specular colour and specular map go in as they are, and its shininess becomes a GGX
+          // roughness through the usual Blinn-Phong translation. (The FBX's gloss texture is one
+          // FBXLoader drops before anyone can see it.)
+          const rebuilt = new Map();
+          const remap = (material) => {
+            if (rebuilt.has(material)) return rebuilt.get(material);
+            const shininess = material.shininess ?? 20;
+            const physical = new THREE.MeshPhysicalMaterial({
+              name: material.name,
+              color: material.color?.clone() ?? new THREE.Color(0xffffff),
+              // sqrt(2 / (shininess + 2)) is the standard shininess → roughness translation.
+              roughness: THREE.MathUtils.clamp(Math.sqrt(2 / (shininess + 2)), 0.05, 1),
+              metalness: 0,
+              specularIntensity: 1,
+              specularColor: material.specular?.clone() ?? new THREE.Color(0xffffff),
+              transparent: material.transparent,
+              opacity: material.opacity,
+              alphaTest: material.alphaTest,
+              side: material.side,
+            });
+            // A cut-out material whose alpha lives in the diffuse map has to keep PNG.
+            const alphaInMap = (material.transparent || material.alphaTest > 0) && !material.alphaMap;
+            physical.map = shrink(material.map, MAX_COLOR, {
+              colorSpace: THREE.SRGBColorSpace,
+              mime: alphaInMap ? "image/png" : "image/jpeg",
+            });
+            physical.alphaMap = shrink(material.alphaMap, MAX_DATA, { colorSpace: THREE.NoColorSpace, mime: "image/png" });
+            physical.normalMap = shrink(material.normalMap, MAX_DATA, { colorSpace: THREE.NoColorSpace });
+            if (physical.normalMap && material.normalScale) physical.normalScale.copy(material.normalScale);
+            // The specular map is colour data in the extension, so it keeps its colour space.
+            physical.specularColorMap = shrink(material.specularMap, MAX_DATA, { colorSpace: THREE.SRGBColorSpace });
+            if (!material.specularMap && material.specular) physical.specularColor = material.specular.clone();
+            rebuilt.set(material, physical);
+            return physical;
+          };
+
+          model.traverse((object) => {
+            if (!object.isMesh) return;
+            object.material = Array.isArray(object.material) ? object.material.map(remap) : remap(object.material);
+          });
+
+          const exporter = new GLTFExporter();
+          const glb = await exporter.parseAsync(model, {
+            binary: true,
+            animations: clips.map((clip) => clip.animation),
+            maxTextureSize: MAX_COLOR,
+          });
+          step(`${runner.id}: exporting`);
+          entry.bytes = glb.byteLength;
+          entry.base64Chunks = [];
+          const base64 = toBase64(glb);
+          const CHUNK = 512 * 1024;
+          for (let index = 0; index < base64.length; index += CHUNK) {
+            entry.base64Chunks.push(base64.slice(index, index + CHUNK));
+          }
+          files[runner.id] = entry.base64Chunks;
+        }
+
+        // The chunks are what the driver downloads; keep them out of the printed report.
+        report.push({ ...entry, base64Chunks: undefined });
+      }
+
+      window.__glb = files;
+      window.__report = JSON.stringify(report, null, 1);
+      window.__shrinkLog = JSON.stringify(shrinkLog, null, 1);
+      window.__done = true;
+    </script>
+  </body>
+</html>

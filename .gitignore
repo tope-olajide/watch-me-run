@@ -141,3 +141,12 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Local Netlify folder
+.netlify
+
+# Model sources
+# The runner rigs and their animation clips are 122 MB of FBX. Only the 6.9 MB of GLBs they convert
+# to is kept in git; `tools/fbx-to-glb.mjs` rebuilds those from the sources on disk.
+models/**/*.fbx
+reference/

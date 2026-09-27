@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>runner fidelity: FBX vs GLB</title>
+    <style>
+      body { background: #0d1114; color: #cfd6dd; font: 13px/1.5 system-ui, sans-serif; margin: 24px; }
+      h1 { font-size: 15px; font-weight: 600; }
+      .pair { display: flex; gap: 16px; margin-block: 16px; }
+      figure { margin: 0; }
+      figcaption { margin-block-end: 6px; color: #8b979f; }
+      canvas { display: block; border: 1px solid #232a30; }
+      pre { white-space: pre-wrap; color: #9fb0bd; }
+    </style>
+  </head>
+  <body>
+    <h1>Runner fidelity: the FBX source against the GLB that ships</h1>
+    <p>
+      Both models are drawn with the desert world's own light (the same values as
+      <code>RunnerScene.tsx</code>) from the game camera and from the menu preview's closer camera, in
+      bind pose. The report measures brightness, neighbour-pixel detail and blown-out highlights, and
+      the per-pixel difference between the two.
+    </p>
+    <div class="pair">
+      <figure>
+        <figcaption id="caption-fbx">FBX</figcaption>
+        <canvas id="fbx-view" width="512" height="512"></canvas>
+      </figure>
+      <figure>
+        <figcaption id="caption-glb">GLB</figcaption>
+        <canvas id="glb-view" width="512" height="512"></canvas>
+      </figure>
+    </div>
+    <pre id="log"></pre>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+      import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+
+      const SIZE = 512;
+      const BACKGROUND = 0x0d1114;
+      const log = (line) => {
+        document.getElementById("log").textContent += `${line}\n`;
+      };
+
+      const fbxView = document.getElementById("fbx-view");
+      const glbView = document.getElementById("glb-view");
+      const captionFbx = document.getElementById("caption-fbx");
+      const captionGlb = document.getElementById("caption-glb");
+
+      const canvas = document.createElement("canvas");
+      canvas.width = SIZE;
+      canvas.height = SIZE;
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
+      renderer.setPixelRatio(1);
+      renderer.setSize(SIZE, SIZE, false);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      // R3F's defaults, so the comparison matches what the game renders.
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.setClearColor(BACKGROUND, 1);
+
+      const scene = new THREE.Scene();
+      // The desert world's light, copied from `environmentLook.desert` in RunnerScene.tsx.
+      scene.add(new THREE.AmbientLight("#e6a86f", 1.45));
+      const key = new THREE.DirectionalLight("#ffd9a0", 2.1 * 0.9);
+      key.position.set(5, 11, 9);
+      scene.add(key);
+
+      const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 200);
+      const VIEWS = {
+        game: { position: [0, 3.4, 11.5], target: [0, 1.5, -22], fov: 46, z: 3 },
+        // R3F's preview camera takes a position but no target, so it looks straight down -Z.
+        close: { position: [0, 1.3, 5], target: null, fov: 32, z: 0 },
+      };
+
+      const gltfLoader = new GLTFLoader();
+      const fbxLoader = new FBXLoader();
+
+      const normalize = (model) => {
+        const bounds = new THREE.Box3().setFromObject(model);
+        const height = Math.max(bounds.max.y - bounds.min.y, 0.001);
+        const wrapper = new THREE.Group();
+        wrapper.scale.setScalar(2.35 / height);
+        wrapper.rotation.y = Math.PI;
+        const inner = new THREE.Group();
+        inner.position.y = -bounds.min.y;
+        inner.add(model);
+        wrapper.add(inner);
+        return wrapper;
+      };
+
+      const pixels = () => {
+        const buffer = new Uint8Array(SIZE * SIZE * 4);
+        const gl = renderer.getContext();
+        gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+        return buffer;
+      };
+
+      const stats = (buffer) => {
+        const luma = [];
+        for (let index = 0; index < buffer.length; index += 4) {
+          luma.push(0.2126 * buffer[index] + 0.7152 * buffer[index + 1] + 0.0722 * buffer[index + 2]);
+        }
+        const sorted = [...luma].sort((a, b) => a - b);
+        const at = (share) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))];
+        const mean = luma.reduce((total, value) => total + value, 0) / luma.length;
+        const variance = luma.reduce((total, value) => total + (value - mean) ** 2, 0) / luma.length;
+        // Detail energy: how much neighbouring pixels differ, which is what "flat" would show up as.
+        let gradient = 0;
+        let count = 0;
+        for (let y = 0; y < SIZE; y += 1) {
+          for (let x = 0; x < SIZE - 1; x += 1) {
+            gradient += Math.abs(luma[y * SIZE + x] - luma[y * SIZE + x + 1]);
+            count += 1;
+          }
+        }
+        const background = 0.2126 * ((BACKGROUND >> 16) & 255) + 0.7152 * ((BACKGROUND >> 8) & 255) + 0.0722 * (BACKGROUND & 255);
+        const ink = luma.filter((value) => Math.abs(value - background) > 6).length;
+        const highlight = luma.filter((value) => value > mean + 2.5 * Math.sqrt(variance)).length;
+        return {
+          mean: Number(mean.toFixed(2)),
+          deviation: Number(Math.sqrt(variance).toFixed(2)),
+          p95: Number(at(0.95).toFixed(1)),
+          detail: Number((gradient / count).toFixed(3)),
+          ink,
+          highlight,
+          luma,
+          background,
+        };
+      };
+
+      const texturesOf = (model) => {
+        const textures = new Set();
+        model.traverse((object) => {
+          if (!object.isMesh) return;
+          for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+            if (!material) continue;
+            for (const slot of ["map", "normalMap", "specularMap", "specularColorMap", "roughnessMap", "metalnessMap", "alphaMap", "emissiveMap", "aoMap"]) {
+              if (material[slot]) textures.add(material[slot]);
+            }
+          }
+        });
+        return textures;
+      };
+
+      /**
+       * FBXLoader resolves before its embedded images have decoded, and a render taken in that window
+       * is an untextured, near-black model — which reads as "the GLB looks different" when it is only
+       * the FBX that was not ready. Wait for every map to have real dimensions first.
+       */
+      const settle = async (model) => {
+        const started = performance.now();
+        let pending;
+        do {
+          pending = 0;
+          for (const texture of texturesOf(model)) {
+            const image = texture.image;
+            if (!(image?.naturalWidth ?? image?.width ?? 0)) pending += 1;
+            texture.needsUpdate = true;
+            renderer.initTexture(texture);
+          }
+          renderer.render(scene, camera);
+          if (pending) await new Promise((resolve) => setTimeout(resolve, 250));
+        } while (pending > 0 && performance.now() - started < 20000);
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return { pending, ms: Math.round(performance.now() - started) };
+      };
+
+      const materialFacts = (model) => {
+        const facts = [];
+        model.traverse((object) => {
+          if (!object.isMesh) return;
+          for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+            if (!material) continue;
+            facts.push(
+              `${material.name} (${material.type}) colour #${material.color?.getHexString() ?? "?"}` +
+                `${material.shininess !== undefined ? ` shininess ${material.shininess} specular #${material.specular?.getHexString()}` : ""}` +
+                `${material.roughness !== undefined ? ` roughness ${material.roughness} metalness ${material.metalness}` : ""}` +
+                ` maps: ${["map", "normalMap", "specularMap", "specularColorMap", "roughnessMap", "alphaMap"].filter((slot) => material[slot]).join(", ")}`,
+            );
+          }
+        });
+        return facts;
+      };
+
+      const render = (model, view, into) => {
+        const wrapper = normalize(model);
+        wrapper.position.z = VIEWS[view].z;
+        scene.add(wrapper);
+        camera.fov = VIEWS[view].fov;
+        camera.position.set(...VIEWS[view].position);
+        if (VIEWS[view].target) camera.lookAt(...VIEWS[view].target);
+        else camera.rotation.set(0, 0, 0);
+        camera.updateProjectionMatrix();
+        renderer.render(scene, camera);
+        const buffer = pixels();
+        into.getContext("2d").drawImage(canvas, 0, 0);
+        scene.remove(wrapper);
+        return { buffer, ...stats(buffer) };
+      };
+
+      const compare = (a, b) => {
+        let difference = 0;
+        let over8 = 0;
+        let over24 = 0;
+        let considered = 0;
+        for (let index = 0; index < a.luma.length; index += 1) {
+          const isBackground = Math.abs(a.luma[index] - a.background) <= 6 && Math.abs(b.luma[index] - b.background) <= 6;
+          if (isBackground) continue;
+          considered += 1;
+          const delta = Math.abs(a.luma[index] - b.luma[index]);
+          difference += delta;
+          if (delta > 8) over8 += 1;
+          if (delta > 24) over24 += 1;
+        }
+        return {
+          considered,
+          meanDifference: considered ? Number((difference / considered).toFixed(2)) : 0,
+          over8: considered ? Number(((over8 / considered) * 100).toFixed(1)) : 0,
+          over24: considered ? Number(((over24 / considered) * 100).toFixed(1)) : 0,
+        };
+      };
+
+      const report = [];
+      for (const id of ["amy", "james", "mousey"]) {
+        const entry = { id, views: {} };
+        for (const view of Object.keys(VIEWS)) {
+          const fbxModel = await fbxLoader.loadAsync(`/models/characters/${id}.fbx`);
+          const fbxSettle = await settle(fbxModel);
+          entry.fbxMaterials = materialFacts(fbxModel);
+          const fbx = render(fbxModel, view, fbxView);
+          const gltf = await gltfLoader.loadAsync(`/models/characters/${id}.glb`);
+          const glbSettle = await settle(gltf.scene);
+          entry.glbMaterials = materialFacts(gltf.scene);
+          const glb = render(gltf.scene, view, glbView);
+          entry[`settle_${view}`] = { fbx: fbxSettle, glb: glbSettle };
+          entry.views[view] = {
+            fbx: { mean: fbx.mean, deviation: fbx.deviation, p95: fbx.p95, detail: fbx.detail, ink: fbx.ink, highlight: fbx.highlight },
+            glb: { mean: glb.mean, deviation: glb.deviation, p95: glb.p95, detail: glb.detail, ink: glb.ink, highlight: glb.highlight },
+            difference: compare(fbx, glb),
+          };
+          log(
+            `${id} ${view}: detail ${fbx.detail} (fbx) vs ${glb.detail} (glb), ` +
+              `means ${fbx.mean} vs ${glb.mean}, mean|Δ| ${entry.views[view].difference.meanDifference}/255, ` +
+              `${entry.views[view].difference.over8}% of pixels differ by more than 8`,
+          );
+        }
+        report.push(entry);
+        captionFbx.textContent = `FBX — ${id}, ${Object.keys(VIEWS).at(-1)} view`;
+        captionGlb.textContent = `GLB — ${id}, ${Object.keys(VIEWS).at(-1)} view`;
+      }
+
+      window.__report = JSON.stringify(report, null, 1);
+      window.__done = true;
+      log("report available as window.__report");
+    </script>
+  </body>
+</html>
