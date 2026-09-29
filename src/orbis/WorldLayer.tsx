@@ -12,6 +12,7 @@ import {
 import { audioPrompt, openingPrompt, type WorldView } from "./prompts";
 import { recordPrompt, settlePrompt, type PromptReason } from "./prompt-journal";
 import { getReactorToken, resetReactorToken } from "./token";
+import { attachWorldVideo } from "./world-frame";
 import {
   publishChunk,
   registerWorldCommands,
@@ -49,13 +50,34 @@ const CONNECT_OPTIONS: ReactorConnectOptions = { autoConnect: false, maxAttempts
 const READY_TIMEOUT_MS = 40_000;
 
 /**
+ * How long the two retry loops below keep asking before the world is left in local mode.
+ *
+ * The server, not this file, decides how long a session that was never released can hold the
+ * account's only slot: a lease lasts at most `MAX_SESSION_DURATION_SECONDS` (20 minutes — see
+ * server/reactor-token.ts), and a session whose termination failed — a reload while the network was
+ * down, say — holds its slot until that lease runs out. A retry budget shorter than the lease turns
+ * one dropped connection into a dead world until the player reloads *again*, which is exactly what a
+ * live session did: fifteen attempts at eight seconds is two minutes, and every 429 that kept
+ * arriving after that was the leaked slot answering a question nobody was asking any more.
+ *
+ * So both loops poll at their own cadence for the two minutes an ordinary release takes, then slowly,
+ * a minute at a time, for longer than any lease can last. The long tail costs one token request and
+ * one refused session create a minute, and buys a world that comes back by itself when the slot
+ * frees instead of one that never does.
+ */
+const SLOW_RETRY_DELAY_MS = 60_000;
+/** 22 slow attempts, so the slow tail alone outlasts the 20-minute lease with room to spare. */
+const SLOW_RETRY_ATTEMPTS = 22;
+
+/**
  * The account allows one concurrent Orbis session per model, and a session that was closed by a
  * killed tab or a reload holds its slot for a while. A fast second visit therefore has to wait,
- * so this retries for a couple of minutes with the reason on screen rather than giving up — the
- * game is playable in local world mode the whole time.
+ * so this retries with the reason on screen rather than giving up — the game is playable in local
+ * world mode the whole time.
  */
 const BUSY_RETRY_DELAY_MS = 8_000;
-const BUSY_MAX_ATTEMPTS = 15;
+/** The fast phase: the ordinary case is a slot still being released by the tab that just closed. */
+const BUSY_FAST_ATTEMPTS = 15;
 const BUSY_PATTERN = /429|quota_exceeded|concurrent_sessions|session limit/i;
 const BUSY_MESSAGE = "Orbis is still releasing the previous world (one session at a time)";
 
@@ -68,8 +90,36 @@ const BUSY_MESSAGE = "Orbis is still releasing the previous world (one session a
  */
 const ARM_RETRY_MS = 1_500;
 
-/** A session that outlives its usefulness holds the account's only slot. Release idle ones. */
-const IDLE_SESSION_CAP_MS = 25 * 60_000;
+/**
+ * How many times an arming pass may retry when it is the one thing keeping a live run out of local
+ * world mode.
+ *
+ * The pass is normally driven by the status changing, and a run does not change it: a `start` that
+ * fails on a link that is still up would leave nothing to re-run this effect at all, and the run
+ * would finish in local world mode with the world reachable the whole time — the same bug the mid-run
+ * re-arm exists to fix, one failure deeper. Four is chosen against the alternative, an unbounded loop
+ * against a model that is failing on purpose.
+ */
+const REARM_ATTEMPTS = 4;
+
+/**
+ * How long a session may stay open with no run on screen.
+ *
+ * The menu is local, so an open session in the menu is one nobody is watching: it is billed whenever
+ * it is ready, and it holds the account's single slot. This is a grace window rather than an eviction
+ * — a player who finishes a run and starts another inside it finds the world still warm and the
+ * loading screen over in well under a second, while one who wanders off is not paying for a menu.
+ *
+ * Sixty seconds is a compromise the cost model does not settle by itself: the value of the window is a
+ * restart that skips the loading screen, and a cold start measured on this stack has run from twenty
+ * to forty seconds, so anything much shorter than the grace is cheaper than it. What bounds it from
+ * above is that a menu left open is a menu the player is not watching.
+ *
+ * What changed when the menu went local is the *other* half of the idle path: it used to release the
+ * session and immediately ask for a replacement, which would now be connecting a world for a surface
+ * that deliberately has none (see the recycle effect below).
+ */
+const IDLE_SESSION_CAP_MS = 60_000;
 
 /**
  * How long the chunk loop rests after each chunk of frames.
@@ -86,6 +136,18 @@ const CHUNK_REST_MS = 3_000;
 
 /** How long a lost pause/resume command waits before it is tried again. */
 const PAUSE_RETRY_MS = 2_000;
+
+/**
+ * How long a failed session release waits before it asks again, and how many times it asks.
+ *
+ * The retry is worth more than the wait is long: a release that failed leaves the session holding the
+ * account's only slot for the rest of its lease (`MAX_SESSION_DURATION_SECONDS` — see
+ * server/reactor-token.ts), and the usual reason a release fails is a network blip that is over
+ * seconds later. Five attempts at 4 s, doubling, cover about two minutes; anything past that is the
+ * connect loops' job, since they carry the same debt into every retry (see `releaseOwed`).
+ */
+const RELEASE_RETRY_MS = 4_000;
+const RELEASE_MAX_ATTEMPTS = 5;
 
 /**
  * Ceiling on how long a pause/resume command may take.
@@ -141,9 +203,15 @@ const RECONNECTING_MESSAGE = "World link interrupted — reconnecting";
  */
 const UNREACHABLE_MESSAGE = "Couldn't reach the Orbis world — the run plays in local world mode";
 
-/** Backoff for recovering a session that dropped on its own, while a world is still wanted. */
+/**
+ * Backoff for recovering a session that dropped on its own, while a world is still wanted.
+ *
+ * The fast phase is the doubling above; past it the recovery keeps asking slowly (see
+ * SLOW_RETRY_ATTEMPTS), because what it is usually waiting for by then is not the connection but the
+ * account's single session slot, held by the session that just dropped until its lease expires.
+ */
 const RECONNECT_BASE_MS = 2_500;
-const RECONNECT_MAX_ATTEMPTS = 6;
+const RECONNECT_FAST_ATTEMPTS = 6;
 
 const NO_SESSION: WorldSessionState = {
   started: false,
@@ -174,6 +242,20 @@ function errorText(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   if (typeof cause === "string") return cause;
   return "Unknown Orbis error";
+}
+
+/**
+ * Whether a failure is the transport rather than the account.
+ *
+ * The SDK classifies its own failures — `ReactorError.code`, and a request that never got a reply is
+ * `NETWORK_ERROR` — so the code answers this question where the failure is one the SDK raised. The
+ * message patterns cover the ones the binding reports as plain text instead, e.g. `http transport
+ * error: jwt resolver rejected: fetch failed`.
+ */
+function isTransportFailure(cause: unknown): boolean {
+  return (
+    (cause as { code?: unknown }).code === "NETWORK_ERROR" || TRANSPORT_PATTERN.test(errorText(cause))
+  );
 }
 
 /**
@@ -236,7 +318,7 @@ function WorldSession() {
   const sdk = useRef(reactor);
   sdk.current = reactor;
 
-  const { runActive, pauseRequested } = useWorld();
+  const { runActive, pauseRequested, world: selectedWorld } = useWorld();
   const [request, setRequest] = useState<WorldRequest>();
   const [error, setError] = useState<string>();
   const [needsSound, setNeedsSound] = useState(false);
@@ -284,6 +366,13 @@ function WorldSession() {
   const restTimer = useRef(0);
   const pauseRetryTimer = useRef(0);
   const reconnectAttempts = useRef(0);
+  /** Mid-run re-arms tried on the connection currently open, and their timer — see REARM_ATTEMPTS. */
+  const rearmAttempts = useRef(0);
+  const rearmTimer = useRef(0);
+  /** A release the account is still owed, and the retries working on it — see `releaseSession`. */
+  const releaseOwed = useRef(false);
+  const releaseAttempts = useRef(0);
+  const releaseTimer = useRef(0);
   const videoTrack = useViskoOrbisStableTrack("main_video");
 
   statusRef.current = status;
@@ -348,9 +437,61 @@ function WorldSession() {
     updateWorld({ videoState: next });
   }, []);
 
+  /**
+   * End the session, and keep asking when the asking fails.
+   *
+   * A release that fails is the expensive kind of failure: the session goes on holding the account's
+   * only slot until its lease runs out, and the tab that owns it is usually gone by then. It is also
+   * the call most likely to fail *into* a network blip, because ending a session wants a fresh JWT —
+   * `jwt resolver rejected: fetch failed` is what a release into a dead network looks like — so the
+   * one failure that costs the most is the one a transient cause produces.
+   *
+   * Asking again later is a real retry rather than a hopeful one: the binding ends the session
+   * server-side on every `disconnect()`, and a failed one leaves the wasm client that knows which
+   * session to end alive (`Reactor.disconnect()` only frees that client once the release has
+   * succeeded), so the next attempt finishes the job the first one started. A link that reaches
+   * `ready` cancels the debt instead: it has a session of its own, so whatever the earlier release
+   * could not end is gone or not ours to end.
+   */
+  const releaseSession = useCallback(async (reason: string): Promise<boolean> => {
+    const attempt = releaseAttempts.current + 1;
+    try {
+      await sdk.current.disconnect();
+      releaseAttempts.current = 0;
+      releaseOwed.current = false;
+      trace("release", `${reason} ok (attempt ${attempt})`);
+      return true;
+    } catch (cause) {
+      releaseOwed.current = true;
+      trace("release", `${reason} failed (attempt ${attempt}): ${errorText(cause)}`);
+      console.warn(`[orbis] could not release the session (${reason})`, cause);
+      if (releaseAttempts.current < RELEASE_MAX_ATTEMPTS) {
+        const wait = RELEASE_RETRY_MS * 2 ** releaseAttempts.current;
+        releaseAttempts.current += 1;
+        window.clearTimeout(releaseTimer.current);
+        releaseTimer.current = window.setTimeout(() => {
+          // A ready session, or a connect already in flight, has taken the debt over: one of them
+          // releases before it connects (see `startWorld`), and ending a session underneath a
+          // connect that is about to succeed would be worse than leaving the release to them.
+          if (statusRef.current !== "disconnected" || connecting.current) return;
+          void releaseSession(reason);
+        }, wait);
+      }
+      return false;
+    }
+  }, []);
+
   const startWorld = useCallback(async (next: WorldRequest) => {
     setRequest(next);
     updateWorld({ world: next.environment });
+
+    // A picture the session is not already holding means the next arming pass is a rebuild: `reset`,
+    // the image, then `start`. Raised here, at the request, because that is where the wait begins —
+    // the run's loading screen reads this to say what it is waiting for, and the arming pass clears it
+    // when the rebuild is done, or has honestly failed.
+    if (next.landscape && applied.current.landscape !== next.landscape.id) {
+      updateWorld({ pinning: true });
+    }
 
     // A session that exists is steered, never reconnected: `connect()` throws "Already connected or
     // connecting" for any status but `disconnected`, which used to surface as a broken world just
@@ -359,6 +500,14 @@ function WorldSession() {
 
     connecting.current = true;
     resetReactorToken();
+
+    // A release the network interrupted is still owed, and paying it *before* asking for a new
+    // session is the difference between a world that comes back and a `429 quota_exceeded` that keeps
+    // coming back: the session that could not be ended is holding the account's only slot, so the new
+    // session cannot be created. Serialized here, inside the same guard as the connect, so a session
+    // is never ended underneath a connect that has just succeeded.
+    if (releaseOwed.current) await releaseSession("before reconnecting");
+
     try {
       await sdk.current.connect();
     } catch (cause) {
@@ -367,10 +516,29 @@ function WorldSession() {
 
       if (/already connected/i.test(text)) return;
 
-      if (BUSY_PATTERN.test(text) && busyAttempts.current < BUSY_MAX_ATTEMPTS) {
+      // `connect` tears the previous session down before it creates one, and that teardown wants the
+      // same JWT a transport failure just proved unreachable — so a connect that died on the way to
+      // the network is also a release that may have died with it. Record the debt for the next
+      // attempt to pay; a session that was never live has nothing to release.
+      if (everReady.current && isTransportFailure(cause)) releaseOwed.current = true;
+
+      if (
+        BUSY_PATTERN.test(text) &&
+        busyAttempts.current < BUSY_FAST_ATTEMPTS + SLOW_RETRY_ATTEMPTS
+      ) {
         busyAttempts.current += 1;
-        setError(`${BUSY_MESSAGE} (${busyAttempts.current}/${BUSY_MAX_ATTEMPTS})`);
-        retryTimer.current = window.setTimeout(() => void startWorld(next), BUSY_RETRY_DELAY_MS);
+        // The count is honest for the fast phase and meaningless once the waits are a minute long,
+        // so the player is told which one they are in instead of a number that stops rising usefully.
+        const slow = busyAttempts.current > BUSY_FAST_ATTEMPTS;
+        setError(
+          slow
+            ? `${BUSY_MESSAGE} (still waiting, one try a minute)`
+            : `${BUSY_MESSAGE} (${busyAttempts.current}/${BUSY_FAST_ATTEMPTS})`,
+        );
+        retryTimer.current = window.setTimeout(
+          () => void startWorld(next),
+          slow ? SLOW_RETRY_DELAY_MS : BUSY_RETRY_DELAY_MS,
+        );
         return;
       }
 
@@ -439,8 +607,12 @@ function WorldSession() {
       showWorld: (next) => void handlers.current.startWorld(next),
       sendPrompt: (prompt, entry) => void handlers.current.sendChannel(prompt, "video", entry),
       sendAudio: (prompt, entry) => void handlers.current.sendChannel(prompt, "audio", entry),
-      retry: () =>
-        void handlers.current.startWorld(requestRef.current ?? { environment: "desert", landscape: null }),
+      retry: () => {
+        // Retry retries something that was asked for. In the menu nothing has been, and starting a
+        // session from the chip would be spending one the player never asked for.
+        const next = requestRef.current;
+        if (next) void handlers.current.startWorld(next);
+      },
     });
     if (queued) void handlers.current.startWorld(queued);
     return () => {
@@ -450,6 +622,28 @@ function WorldSession() {
       window.clearTimeout(reconnectTimer.current);
       window.clearTimeout(restTimer.current);
       window.clearTimeout(pauseRetryTimer.current);
+      window.clearTimeout(releaseTimer.current);
+    };
+  }, []);
+
+  // Drop the link on purpose, in development.
+  //
+  // A dropped link is the one failure this layer has that cannot be produced on demand: the network
+  // can be taken away from the token route and from every other request, but not from an established
+  // WebRTC media path — `Network.emulateNetworkConditions({offline:true})` was measured under a live
+  // run and the status stayed `ready`/`streaming` for the whole twenty seconds while the world kept
+  // producing frames. So the transition is handed over directly: the SDK told to drop while a run is
+  // on screen, which is what the status goes through when the transport really dies. It is the only
+  // way to exercise the recovery below without waiting for a real one (see tools/drop-probe.mjs).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const host = window as unknown as { __orbisDrop?: () => void };
+    host.__orbisDrop = () => {
+      trace("force-drop", "probe released the link under a live run");
+      void sdk.current.disconnect().catch(() => undefined);
+    };
+    return () => {
+      delete host.__orbisDrop;
     };
   }, []);
 
@@ -459,6 +653,14 @@ function WorldSession() {
       everReady.current = true;
       // A recovered link earns a fresh budget of recovery attempts.
       reconnectAttempts.current = 0;
+      // And a fresh budget of mid-run re-arms, for the same reason: the count belongs to this
+      // connection rather than to the session, so a link that comes back gets the tries a new one does.
+      rearmAttempts.current = 0;
+      // And settles any release still owed: a ready link has a session of its own, so the session an
+      // earlier release could not end is either gone or now ours.
+      releaseOwed.current = false;
+      releaseAttempts.current = 0;
+      window.clearTimeout(releaseTimer.current);
       setError(undefined);
       return;
     }
@@ -490,19 +692,28 @@ function WorldSession() {
 
   // A session that dropped on its own is recovered rather than left for the player: the world is
   // still wanted, and a run in progress must not finish in local world mode because of a blip. The
-  // backoff is bounded, and a link that comes back resets the budget.
+  // backoff is bounded — doubling for the fast phase, then a minute at a time past it, so the loop
+  // outlives a session lease it may be waiting on — and a link that comes back resets the budget.
+  //
+  // Gated on a run being on screen as well as on the request, because the request outlives the run:
+  // after a run ends the menu is still holding the last request for its grace window, and without
+  // this a blip in the menu would have the recovery connect a world for a surface that is deliberately
+  // local. The request is what to reconnect *to*; a run is why to reconnect at all.
   useEffect(() => {
-    if (status !== "disconnected" || !request || !everReady.current) return;
-    if (reconnectAttempts.current >= RECONNECT_MAX_ATTEMPTS) return;
+    if (status !== "disconnected" || !request || !runActive || !everReady.current) return;
+    if (reconnectAttempts.current >= RECONNECT_FAST_ATTEMPTS + SLOW_RETRY_ATTEMPTS) return;
 
-    const wait = RECONNECT_BASE_MS * 2 ** reconnectAttempts.current;
+    const wait =
+      reconnectAttempts.current < RECONNECT_FAST_ATTEMPTS
+        ? RECONNECT_BASE_MS * 2 ** reconnectAttempts.current
+        : SLOW_RETRY_DELAY_MS;
     reconnectTimer.current = window.setTimeout(() => {
       reconnectAttempts.current += 1;
       console.info(`[orbis] recovering a dropped session (attempt ${reconnectAttempts.current})`);
       if (requestRef.current) void handlers.current.startWorld(requestRef.current);
     }, wait);
     return () => window.clearTimeout(reconnectTimer.current);
-  }, [request, status]);
+  }, [request, runActive, status]);
 
   /**
    * Arm and start the session for the requested world and landscape.
@@ -519,7 +730,17 @@ function WorldSession() {
    * early version of this layer look broken.
    */
   useEffect(() => {
-    if (status !== "ready" || !request || runActive) return;
+    if (status !== "ready" || !request) return;
+    // A run on screen is not a reason to steer the world: re-arming is `reset` plus `start`, and a
+    // world rebuilt under the player's feet is worse than the one they are already running through.
+    // The one exception is a link that came back *during* that run. The request still stands, the run
+    // is why it stands, and the arming went with the session that dropped — `applied` is cleared the
+    // moment the link leaves `ready`, so an empty `applied` under a live run is exactly "this link has
+    // never armed the world being run". Without the exception a recovered link comes back connected
+    // and silent: the video re-attaches, generation never restarts, and the run finishes in local
+    // world mode while the world was reachable the whole time.
+    const recoveredMidRun = runActive && everReady.current && applied.current.armed !== true;
+    if (runActive && !recoveredMidRun) return;
 
     const landscapeKey = request.landscape?.id ?? null;
     const appliedState = applied.current;
@@ -555,6 +776,10 @@ function WorldSession() {
 
     void (async () => {
       generation.current = "starting";
+      trace(
+        "arm",
+        `run=${runActive} recovered=${recoveredMidRun} armed=${armed} started=${sessionRef.current.started} world=${request.environment} landscape=${landscapeKey ?? "generated"}`,
+      );
       let pinTook = 0;
       try {
         // 1. A new landscape needs the previous conditions cleared. `reset` is the only thing that
@@ -640,6 +865,7 @@ function WorldSession() {
             console.info(`[orbis] delivery resolution -> ${resolution}`);
           }
           await sdk.current.start();
+          trace("started", `run=${runActive} recovered=${recoveredMidRun}`);
           console.info("[orbis] generation started");
         }
 
@@ -649,8 +875,19 @@ function WorldSession() {
           landscape: landscapeKey,
         };
         busyAttempts.current = 0;
+        // The arm landed, so the budget of tries this pass owns is done with.
+        rearmAttempts.current = 0;
       } catch (cause) {
         console.warn("[orbis] could not steer the world", cause);
+        trace("arm-failed", `${errorText(cause)} run=${runActive} recovered=${recoveredMidRun}`);
+        // A run on screen leaves nothing else to re-run this effect — it is keyed on the status and
+        // the session's snapshot, and a failed `start` on a link that is still up changes neither — so
+        // a recovery that fails here is retried from here or not at all.
+        if (recoveredMidRun && rearmAttempts.current < REARM_ATTEMPTS) {
+          rearmAttempts.current += 1;
+          window.clearTimeout(rearmTimer.current);
+          rearmTimer.current = window.setTimeout(() => setArmRetry((value) => value + 1), ARM_RETRY_MS);
+        }
       } finally {
         if (pinTook) {
           console.info(
@@ -664,6 +901,7 @@ function WorldSession() {
         updateWorld({ pinning: false });
       }
     })();
+    return () => window.clearTimeout(rearmTimer.current);
   }, [armRetry, request, runActive, sendOwn, session.started, sessionId, status]);
 
   /**
@@ -774,6 +1012,9 @@ function WorldSession() {
       if (video) {
         if (video !== attachedElement) {
           attachedElement = video;
+          // The same watcher feeds the roadside's panels: one answer to "where is the world being
+          // played", rather than a second watcher that can disagree about it (see world-frame.ts).
+          attachWorldVideo(video);
           console.info(`[orbis] video element attached (${video.readyState}, muted=${video.muted})`);
         }
         const streaming = video.readyState >= 2 && video.videoWidth > 0;
@@ -799,7 +1040,12 @@ function WorldSession() {
       timer = window.setTimeout(inspect, 700);
     };
     inspect();
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      // Only the sampler stops; the last frame it took is kept, so the panels go on showing the world
+      // through a reconnect instead of flickering to the fallback art and back.
+      attachWorldVideo(null);
+    };
   }, [publishVideoState, status, videoTrack]);
 
   // Report a diagnosis instead of hanging silently when the session never readies.
@@ -811,31 +1057,43 @@ function WorldSession() {
     return () => window.clearTimeout(waitTimer.current);
   }, [request, status]);
 
-  // Reliability: one concurrent session per account means ours must never be orphaned, and an
-  // idle one must not sit on the slot forever. Runs pin it; the menu recycles it.
+  // Reliability: one concurrent session per account means ours must never be orphaned, and the menu
+  // no longer holds a world at all. Runs pin it; the menu lets it go.
   useEffect(() => {
     const endSession = () => {
-      void sdk.current.disconnect().catch(() => undefined);
+      // A release that fails here is the leak that costs the most, because the tab it belongs to is
+      // usually gone by the time anyone notices: the retry it schedules only helps a page that comes
+      // back from the bfcache, and the debt it records lives no longer than this page does — after
+      // that, only the session's lease frees the slot.
+      void releaseSession("pagehide");
     };
     window.addEventListener("pagehide", endSession);
     return () => window.removeEventListener("pagehide", endSession);
-  }, []);
+  }, [releaseSession]);
 
   useEffect(() => {
     if (status !== "ready" || runActive) return;
     const timer = window.setTimeout(() => {
       void (async () => {
-        console.info("[orbis] recycling an idle session");
-        await sdk.current.disconnect().catch(() => undefined);
+        console.info("[orbis] releasing the session: no run on screen");
+        // A failed release is left to its own retry, and the request is deliberately not cleared
+        // until it succeeds: the debt is paid by the next connect (see `startWorld`), and clearing the
+        // request first would leave that connect with nothing to ask for.
+        if (!(await releaseSession("idle menu"))) return;
         applied.current = {};
         generation.current = "idle";
-        if (requestRef.current) await handlers.current.startWorld(requestRef.current);
+        // The request goes with the session. The menu asks for nothing, so there is nothing to
+        // re-arm, and leaving it set would have the recovery effect connect a world the player never
+        // asked for — which is the difference between a local menu and an accidental billing.
+        setRequest(undefined);
       })();
     }, IDLE_SESSION_CAP_MS);
     return () => window.clearTimeout(timer);
   }, [runActive, status]);
 
-  const world = request?.environment ?? "desert";
+  // The published selection rather than a hardcoded world: the menu asks for nothing, so when there is
+  // no request the local backdrop still has to be the tint of the world the player picked.
+  const world = request?.environment ?? selectedWorld ?? "desert";
 
   return (
     <>

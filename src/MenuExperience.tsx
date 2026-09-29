@@ -5,7 +5,7 @@ import { characterCatalog } from "./game/character-catalog";
 import type { Environment } from "./game/run-state";
 import { worlds } from "./game/worlds";
 import { LandscapeError, landscapeNote, prepareLandscape } from "./orbis/landscape";
-import { useWorld, world, worldLabel, worldTone } from "./orbis/world-bus";
+import { menuWorldLabel, useWorld, world, worldTone } from "./orbis/world-bus";
 
 const CharacterPreview = lazy(() => import("./game/CharacterPreview"));
 
@@ -25,21 +25,25 @@ export default function MenuExperience({ onStart, entering = false, returning = 
   const fileInput = useRef<HTMLInputElement>(null);
   const worldState = useWorld();
   const landscape = worldState.landscape;
-  // A picture the player picks becomes the session's starting frame, which Orbis will only take
-  // before `start` — so it rebuilds the world. That rebuild must not land under a run, which is why
-  // the run waits for it rather than the world being rebuilt around a player already in it.
-  const pinning = worldState.pinning;
   const character = characterCatalog.find((item) => item.id === characterId);
   const selected = worlds.find((item) => item.id === environment) ?? worlds[0];
   const tone = worldTone(worldState);
-  const generating = worldState.world === environment;
 
-  // The menu is also the world's pre-flight: it starts generating straight away, and every world
-  // change morphs the running stream instead of opening a second session. Selecting a landscape
-  // asks for the world itself — it is a condition of the session, not a prompt — so it takes the
-  // rebuild path in the world layer rather than going through here.
+  /**
+   * The menu stages a choice and asks Orbis for nothing.
+   *
+   * It used to start generating the moment it mounted, so that by the time the player pressed Start
+   * there was a world behind them to dive into. That world was billed for as long as it was ready —
+   * frames generated for a menu, at whatever rate the chunk loop was set to — and the landscape the
+   * player picked rebuilt the session while they were still looking at the menu. Both now belong to
+   * the run: pressing Start opens the loading screen, and the world is asked for there (`WorldLoader`
+   * requests it, the world layer arms it, and the run begins when it is armed).
+   *
+   * What the menu still does is publish which world *will* be asked for, because the local backdrop
+   * behind it is that world's tint.
+   */
   useEffect(() => {
-    world.showWorld(environment);
+    world.select(environment);
   }, [environment]);
 
   /**
@@ -98,7 +102,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
           data-world-video={worldState.videoState}
         >
           <span className="engine-dot" />
-          {worldLabel(worldState)}
+          {menuWorldLabel(worldState)}
         </button>
       </header>
 
@@ -129,7 +133,6 @@ export default function MenuExperience({ onStart, entering = false, returning = 
             <Suspense fallback={<div className="stage-loading">Loading runner…</div>}>
               <CharacterPreview characterId={characterId} />
             </Suspense>
-            {tone === "live" && <span className="stage-live">Live world</span>}
             <span className="stage-world">{selected.label}</span>
           </div>
           <div className="stage-caption">
@@ -155,7 +158,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
         <div className="menu-worlds">
           <div className="section-heading">
             <span className="eyebrow">Choose your world</span>
-            <span className="heading-note">{generating ? "Generating behind you" : "Generated as you run"}</span>
+            <span className="heading-note">Generated when you start</span>
           </div>
           {worlds.map((item) => (
             <button
@@ -173,9 +176,6 @@ export default function MenuExperience({ onStart, entering = false, returning = 
                   {item.hazards.map((hazard) => (
                     <i key={hazard}>{hazard}</i>
                   ))}
-                  {item.id === environment && generating && (
-                    <i className="is-live">{tone === "live" ? "On screen now" : "Loading…"}</i>
-                  )}
                 </span>
               </span>
               <span className="world-arrow">↗</span>
@@ -189,9 +189,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
           <div className="landscape-block" data-state={preparing ? "preparing" : landscape ? "ready" : "empty"}>
             <div className="section-heading">
               <span className="eyebrow">Run in your own picture</span>
-              <span className="heading-note">
-                {pinning && landscape ? "Pinning into the world…" : landscape ? "Your landscape" : "Optional"}
-              </span>
+              <span className="heading-note">{landscape ? "Pinned when you start" : "Optional"}</span>
             </div>
 
             {landscape ? (
@@ -240,7 +238,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
             {landscape ? (
               <p className="landscape-hint">
                 Its horizon is placed on the game's horizon line, so you run on its ground and under
-                its sky.
+                its sky. It is pinned into the world when you start, not here.
               </p>
             ) : (
               <p className="landscape-hint">
@@ -255,16 +253,11 @@ export default function MenuExperience({ onStart, entering = false, returning = 
           <button
             className="start-button"
             onClick={() => onStart(environment, characterId)}
-            disabled={entering || pinning}
-            data-pinning={pinning ? "true" : "false"}
+            disabled={entering}
             type="button"
           >
-            <span>
-              {pinning
-                ? "Pinning your landscape…"
-                : `Start ${landscape ? `${landscape.label} run` : `${selected.label} run`}`}
-            </span>
-            <b>{pinning ? "" : "→"}</b>
+            <span>{`Start ${landscape ? `${landscape.label} run` : `${selected.label} run`}`}</span>
+            <b>→</b>
           </button>
           <p className="menu-controls">← → lanes · ↑ jump · ↓ slide · space pause</p>
           {worldState.error && <p className="menu-note">World link: {worldState.error}</p>}
