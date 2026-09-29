@@ -154,6 +154,34 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
   .enter-weather { display: none; }
 }
 
+/* ----------------------------------------------------- loading a run
+   The menu asks Orbis for nothing, so the wait for a world is its own surface now. It is a sequence
+   rather than a spinner because the four steps are real and have very different lengths — a connect, a
+   first chunk, a landscape pin (a rebuild, not a prompt) and the arming pass — and naming the one that
+   is happening is the whole difference between a load that looks slow and one that looks broken. */
+.world-loader { position: fixed; inset: 0; z-index: 12; display: grid; place-items: center; padding: 26px; background: radial-gradient(112% 78% at 50% 16%, color-mix(in srgb, var(--loader-accent, #f6c84c) 26%, transparent), transparent 66%), linear-gradient(180deg, #0a161a, #071014 62%); animation: loader-in 500ms ease-out both; }
+.world-loader[data-world="desert"] { --loader-accent: #f6b95c; }
+.world-loader[data-world="city"] { --loader-accent: #51e4ff; }
+.world-loader[data-world="forest"] { --loader-accent: #9af29d; }
+@keyframes loader-in { from { opacity: 0; } to { opacity: 1; } }
+.loader-core { display: flex; flex-direction: column; align-items: center; gap: 14px; width: min(560px, 100%); text-align: center; }
+.loader-title { margin: 0; color: #f4f9f6; font-size: clamp(32px, 6vw, 60px); font-weight: 600; line-height: .9; letter-spacing: -.05em; }
+.loader-line { max-width: 46ch; margin: 0; color: #a9c6b7; font-size: 14px; line-height: 1.55; }
+.loader-stages { display: flex; flex-direction: column; gap: 8px; width: 100%; margin: 8px 0 2px; padding: 0; list-style: none; }
+.loader-stages li { display: flex; align-items: center; gap: 11px; padding: 9px 13px; border: 1px solid #1d332c; background: #08120f8c; color: #6f8d81; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; text-align: left; transition: .3s ease; }
+.loader-stages li.done { border-color: #24413a; color: #9fc3b3; }
+.loader-stages li.active { border-color: color-mix(in srgb, var(--loader-accent) 62%, #1d332c); color: #eaf4ee; background: #0b1815d9; }
+.loader-tick { width: 7px; height: 7px; flex: none; border: 1px solid #33564c; border-radius: 50%; }
+.loader-stages li.done .loader-tick { border-color: var(--loader-accent); background: var(--loader-accent); }
+.loader-stages li.active .loader-tick { border-color: var(--loader-accent); background: var(--loader-accent); animation: engine-pulse 1.6s ease-out infinite; }
+.loader-track { position: relative; width: 100%; height: 3px; background: #10221d; overflow: hidden; }
+.loader-fill { position: absolute; inset: 0 auto 0 0; width: 40%; background: linear-gradient(90deg, transparent, var(--loader-accent), transparent); animation: loader-sweep 1.5s ease-in-out infinite; }
+.loader-fill[data-done="true"] { width: 100%; background: var(--loader-accent); animation: none; }
+@keyframes loader-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+.loader-meta { display: flex; justify-content: space-between; gap: 18px; width: 100%; color: #5d7c71; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .14em; text-transform: uppercase; }
+.loader-runner { margin: 4px 0 0; color: #4f6b61; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .14em; text-transform: uppercase; }
+@media (prefers-reduced-motion: reduce) { .world-loader, .loader-fill, .loader-stages li.active .loader-tick { animation: none; } }
+
 /* ------------------------------------------------------------------ homepage */
 .menu { --accent: #f6c84c; --sky-a: #7a4128; --sky-b: #e5a45f; --sky-c: #101615; display: flex; flex-direction: column; padding: clamp(18px, 3.2vw, 42px); }
 .menu[data-world="desert"] { --accent: #f6b95c; --sky-a: #7a4128; --sky-b: #e5a45f; --sky-c: #101615; }
@@ -189,8 +217,6 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .menu-facts b { display: block; margin-bottom: 4px; color: #eaf4ee; font-family: "Space Grotesk", sans-serif; font-size: 19px; letter-spacing: -.02em; }
 .menu-stage { display: flex; flex-direction: column; gap: 12px; }
 .stage-frame { position: relative; height: clamp(240px, 40vh, 380px); border: 1px solid #2b4a41cc; background: linear-gradient(to bottom, #071014eb 6%, #0710148f 46%, #071014d9 96%); backdrop-filter: blur(3px); box-shadow: 0 24px 60px #03080799, inset 0 0 0 1px #ffffff08; overflow: hidden; }
-.stage-live { position: absolute; top: 12px; left: 14px; z-index: 2; display: inline-flex; align-items: center; gap: 6px; color: #cdf3dd; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .16em; text-transform: uppercase; }
-.stage-live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #6ee7a0; box-shadow: 0 0 12px #6ee7a0; }
 .stage-frame::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, #050c0ac4, transparent 58%); pointer-events: none; }
 .stage-loading { display: grid; place-items: center; height: 100%; color: #82a397; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
 .stage-world { position: absolute; left: 14px; bottom: 12px; z-index: 2; color: var(--accent); font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .18em; text-transform: uppercase; }
@@ -221,7 +247,6 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .world-copy small { color: #9eb2a9; font-size: 8px; }
 .world-hazards { display: flex; gap: 6px; margin-top: 3px; }
 .world-hazards i { padding: 3px 8px; border: 1px solid #2f4c43; border-radius: 999px; color: #9ec0b2; font-family: "DM Mono", monospace; font-size: 8px; font-style: normal; letter-spacing: .1em; text-transform: uppercase; }
-.world-hazards i.is-live { border-color: color-mix(in srgb, var(--accent) 60%, #2f4c43); color: var(--accent); }
 .world-arrow { color: #628277; font-size: 18px; opacity: .7; }
 
 /* ---- running in a picture the player brought ----------------------------------------------------
@@ -267,6 +292,13 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .world-local[data-world="forest"] { background: radial-gradient(circle at 50% 22%, #71b58c, #1d493d 52%, #081511); }
 .world-layer { opacity: 0; transition: opacity 1.4s ease; animation: world-breathe 26s ease-in-out infinite alternate; }
 .world-layer[data-video="streaming"] { opacity: 1; }
+/* The menu is local, so the world is dark there.
+
+   It is deliberately not unmounted: the provider owns the session, and tearing it down at every return
+   to the menu would end a world the player is only pausing between runs — which is why the grace
+   window exists in the world layer. Hidden instead, which also covers the couple of minutes a world
+   stays warm after a run, so the menu can never be showing frames it is not paying attention to. */
+html[data-surface="menu"] .world-layer { opacity: 0 !important; animation: none; transition: none; }
 /* The SDK renders its own wrapper around the <video> and sizes the video as a percentage of it,
    so the wrapper is what has to be given the frame — styling the inner video leaves it 0px tall.
    The SDK writes `position: relative` inline on that wrapper, hence the override.
@@ -293,12 +325,15 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
    runner is running through. This is the classic backdrop treatment: painted landscape on top, fog
    where the playable ground takes over.
 
-   The ramp starts under the meeting band and stays out of it: the game's horizon is at ~44% and the
-   ribbon fades out at ~50%, so 44-50% is the one place the two layers blend and it is left clear.
-   Below the ramp the video is never more than a texture behind the haze. Drawn over the video but
+   The ramp deliberately leaves the meeting band almost clear. The game's horizon is at ~44%, the
+   local apron is solid down to about 65% of the frame and gone by ~50%, so the band the two layers
+   actually share is roughly 44-55% — and that is where the generated landscape is supposed to be
+   read. The ramp used to run to 0.86 opacity, which crushed that band and everything under it to a
+   near-black smear: wherever the apron had not covered the video there was a dark film instead of
+   landscape. It now only firms up the near field the apron does not own. Drawn over the video but
    inside the world layer, so the WebGL road and runner sit above it and are never hazed. */
-.world-video::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to bottom, rgba(7,16,20,0) 46%, rgba(7,16,20,.3) 52%, rgba(7,16,20,.58) 60%, rgba(7,16,20,.78) 72%, rgba(7,16,20,.86) 100%); }
-.world-layer::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(7,16,20,.02), rgba(7,16,20,.3) 96%), radial-gradient(128% 92% at 50% 44%, rgba(7,16,20,0) 56%, rgba(4,8,10,.46)); opacity: calc(.5 + var(--run-speed, 0) * .5); transition: opacity .5s ease-out; }
+.world-video::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to bottom, rgba(7,16,20,0) 46%, rgba(7,16,20,.12) 56%, rgba(7,16,20,.32) 68%, rgba(7,16,20,.52) 84%, rgba(7,16,20,.6) 100%); }
+.world-layer::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(7,16,20,.02), rgba(7,16,20,.22) 96%), radial-gradient(128% 92% at 50% 44%, rgba(7,16,20,0) 60%, rgba(4,8,10,.32)); opacity: calc(.34 + var(--run-speed, 0) * .3); transition: opacity .5s ease-out; }
 /* The idle breath is a push-in, deliberately with no vertical travel. The generated horizon has to
    hold its line against the game's ground, and the old `translateY(-1.4%)` slid the whole world up
    and back down on a 26 s cycle — a slow mismatch between the landscape and the road it belongs to,
@@ -333,6 +368,17 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .token-gain { margin-left: 5px; color: #c6f0d8; font-size: 10px; font-style: normal; animation: token-gain 1.1s ease-out; }
 @keyframes token-gain { 0% { opacity: 0; transform: translateY(3px); } 18% { opacity: 1; transform: none; } 65% { opacity: 1; } 100% { opacity: 0; } }
 .director-card { left: 30px; bottom: 30px; width: min(380px, calc(100vw - 60px)); padding: 16px; border-left: 2px solid #f6c84c; color: #d6e7df; background: #071014c2; backdrop-filter: blur(10px); }
+/* Frosted glass is cheap over a gradient and expensive over a decoding video.
+
+   A `backdrop-filter` re-reads whatever is behind it every frame, and behind these two panels during
+   a live run is the one combination browsers handle worst: a playing generated video underneath the
+   WebGL layer. Everything else the run puts on screen is either static or on the canvas; this is the
+   only decoration that forces the compositor to keep sampling the whole stack, and it is worth
+   nothing to the player. So the frosted look is kept where it is free — no frames streaming, which
+   includes every local-world run — and traded for a flat panel of the same colour, only slightly
+   more opaque because there is no blur left to hide what is behind it. */
+html:has(.world-layer[data-video="streaming"]) .run-hud,
+html:has(.world-layer[data-video="streaming"]) .director-card { backdrop-filter: none; background: #071014e6; }
 .director-card p { margin: 9px 0 13px; font-size: 13px; line-height: 1.45; }
 .director-card small { color: #77958a; font-size: 9px; line-height: 1.4; }
 .orbis-preview { position: absolute; top: 100px; left: 50%; z-index: 4; display: flex; align-items: center; gap: 10px; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgba(7,16,20,.55); color: #c4d9ce; font-size: 9px; white-space: nowrap; opacity: .9; }

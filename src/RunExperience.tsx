@@ -64,9 +64,9 @@ export default function RunExperience({ environment, characterId, onExit, leavin
     setLastToken({ value, key: tokenKey.current });
   }, []);
 
-  // A run continues the world the menu was already generating, and pins it: while a run is on
-  // screen the session keeps sound and is never recycled. Leaving hands the world back to the menu
-  // instead of ending it, so the next run starts inside the same continuous stream.
+  // A run continues the world the loading screen armed, and pins it: while a run is on screen the
+  // session keeps sound and is never recycled. Leaving hands the world back rather than ending it, so
+  // a next run inside the grace window starts inside the same stream instead of a cold session.
   useEffect(() => {
     world.showWorld(environment);
     world.setRunActive(true);

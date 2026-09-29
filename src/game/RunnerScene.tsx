@@ -21,6 +21,9 @@ import {
   type ObstacleSpawn,
 } from "./pattern-field";
 import { roadGrade } from "./road-grade";
+import { environmentLook } from "./world-look";
+import { createPosterArt, planRoadside, roadsideTaper, roadsideZ } from "./roadside";
+import { worldFrameCanvas, worldFrameRevision } from "../orbis/world-frame";
 import { useWorldTone, type WorldTone } from "../orbis/world-palette";
 import { useWorldAlign } from "../orbis/world-align";
 
@@ -29,18 +32,292 @@ const RunnerCharacter = lazy(() => import("./RunnerCharacter"));
 const PLAYER_Z = 3;
 
 /**
- * The road is a long strip that dissolves with distance, so the generated Orbis world
- * becomes the horizon instead of being hidden behind a wall of terrain. It scrolls at the
- * same speed as the obstacles and coins, which is what makes the runner read as moving
- * *inside* the generated shot rather than sliding over a static floor.
+ * The road is a long strip that dissolves into local ground with distance; the Orbis world stays
+ * visible as the distant vista above that terrain. The road scrolls at the same speed as the
+ * obstacles and coins, so the runner reads as moving through the world rather than sliding over a
+ * static floor.
  */
 const ROAD_WIDTH = 10.5;
-/** The ground is a short ribbon, not a floor: past about 20 m the generated world is the terrain. */
-const ROAD_LENGTH = 46;
+/**
+ * The marked road is a ribbon over a wider game-owned terrain surface.
+ *
+ * 56 m is seven whole 8 m tiles, so the dash pattern closes on the far edge rather than being cut
+ * mid-tile, and the ribbon now reaches about 8 m further toward the horizon than the 46 m it
+ * replaced — road the runner can see ahead of them instead of the end of a strip. The fade is a
+ * proportion of this length, so the extra metres lengthen the blend with the world rather than
+ * moving it.
+ */
+const ROAD_LENGTH = 56;
 const ROAD_NEAR_Z = 16;
 const ROAD_CENTER_Z = ROAD_NEAR_Z - ROAD_LENGTH / 2;
 const ROAD_TILE_WORLD = 8;
 const ROAD_TILES = ROAD_LENGTH / ROAD_TILE_WORLD;
+
+/**
+ * The local ground: a low, gently rolling apron that reaches back under the camera and dissolves
+ * into the generated vista well before the horizon.
+ *
+ * It is deliberately short and shallow. Fading it linearly in world depth put almost all of the fade
+ * into the handful of screen rows just under the horizon — across 350 m the blend covered well under
+ * 1% of the frame — so the apron met the video as a hard seam and read as a flat slab laid over it
+ * instead of ground the runner is moving across. The depths below instead place the fade where the
+ * eye sees it: solid under the runner, half gone by mid-frame, and clear of the generated landscape
+ * by the time the horizon band arrives. The banks are kept under 2 m for the same reason — anything
+ * taller rises into frame at the horizon and walls the world off.
+ */
+const TERRAIN_WIDTH = 360;
+const TERRAIN_NEAR_Z = 16;
+const TERRAIN_LENGTH = 90;
+const TERRAIN_SEGMENTS_X = 144;
+const TERRAIN_SEGMENTS_Z = 90;
+/** Depth over which the apron dissolves: solid under the runner, gone before the horizon band. */
+const TERRAIN_FADE_START = 0.26;
+const TERRAIN_FADE_END = 0.78;
+const TERRAIN_GROUND_Y = -0.12;
+const TERRAIN_ROAD_SHOULDER = ROAD_WIDTH / 2 + 0.25;
+const TERRAIN_BANK_WIDTH = 12;
+/**
+ * What the apron is made of, per world.
+ *
+ * One pattern for all three was the first version, and it read as one material for all three: the
+ * same mottling at the same scale under a dune, a paving slab and a forest floor. The ground of each
+ * world differs in two ways that can be drawn — how large one tile of it is in world metres, and how
+ * hard that tile is inked — so those are the numbers here rather than a single pair of constants.
+ */
+type TerrainDetail = {
+  /**
+   * World metres one tile of the apron's mottling spans before it repeats.
+   *
+   * This is also its scroll rate, and the apron is the largest surface under the runner, so a fixed
+   * pattern there reads as a sheet being slid over the world however fast the ribbon moves: the road
+   * and the obstacles travel and the ground they are on does not. It scrolls a whole tile per the
+   * metres the run has covered, exactly as the ribbon does, so the two surfaces carry the same ground
+   * speed rather than drifting into each other — which is why a smaller tile here means finer detail
+   * and not slower ground.
+   */
+  tile: number;
+  /**
+   * How hard the apron's mottling is inked, as a multiplier on the alphas it is drawn with.
+   *
+   * The pattern went in at a tenth of an alpha, which measures out at about 1.5 luma of variation
+   * across the apron: at the angle that ground is seen from that is a flat tint, so the surface read
+   * as a sheet and, once it started scrolling, had nothing visible to scroll. This is the number to
+   * move to make the ground plainer or busier; at 1 the apron is the near-flat tint it used to be.
+   *
+   * It multiplies a *drawing*, so it saturates: the grain's alphas run 0.05-0.21 and past about 4 the
+   * whole range is clamped to the 0.6 ceiling, which flattens the variation between one speck and the
+   * next instead of busying the ground. A busier ground therefore has to come from more marks.
+   */
+  ink: number;
+  /** Broad blotches per tile: the low-frequency variation that reads as uneven ground at a distance. */
+  blotches: number;
+  /** Speckles per tile: the grain the eye sees at the scale the apron is actually looked at. */
+  specks: number;
+};
+
+/**
+ * The desert is the one that was measured, so it is the baseline the other two are set against rather
+ * than a guess: 26 broad blotches and 2400 specks at `ink: 4` measure out at 3.8 mean |luma| of
+ * variation across the apron with 22% of it moving between frames, which is what stopped the ground
+ * reading as a sheet (see the README). Its tile is the largest of the three because wind-blown sand
+ * is smooth — the variation is broad and soft, and a finer tile would put grain on a dune.
+ *
+ * A darker ground measures out at *less* luma for the same ink, and the city and the forest are both
+ * far darker than the desert — partly in their colours, mostly in how they are lit — so both are
+ * inked slightly harder than it is. That is the whole of the compensation the pattern can make: past
+ * the ceiling above, ink stops buying contrast, and the rest has to come from more marks.
+ *
+ * The tiles are kept within a couple of metres of the desert's rather than taken as fine as each
+ * material could be. Finer is what a hard surface wants — paving and asphalt is many small edges, not
+ * broad patches — but the apron is seen at a distance and grain is the first thing the mip chain
+ * eats: a tile fine enough to read as paving on a slab is at a mip level where the ground has been
+ * averaged back into the colour it was meant to vary. What extra busyness the city gets therefore
+ * comes from marks — 20 blotches and 3200 specks a tile against the desert's 26 and 2400 — and the
+ * forest floor, litter and moss, clumpier than paving and coarser than sand, keeps the most broad
+ * blotches of the three at 34.
+ *
+ * These are chosen from what the materials are and what survives being looked at, not fitted to a
+ * number. Fitting was tried: the obvious metric, how much the shoulder band varies within one frame
+ * relative to its own mean, cannot carry it, because the terrain grade adapts to the frames and the
+ * roadside puts different pieces under the camera every run — the *unchanged* desert's own band moved
+ * by 38% between two runs of identical code.
+ */
+const TERRAIN_DETAIL: Record<Environment, TerrainDetail> = {
+  desert: { tile: 14, ink: 4, blotches: 26, specks: 2400 },
+  city: { tile: 11, ink: 4.2, blotches: 20, specks: 3200 },
+  forest: { tile: 12, ink: 4.2, blotches: 34, specks: 3000 },
+};
+
+/**
+ * A smooth, static height field keeps the playable corridor level while shaping terrain at its sides.
+ *
+ * The geometry itself does not travel — only the surface detail on it does (see the pattern below).
+ * The fade that dissolves the apron is anchored to these depths, so sliding the mesh would drag the
+ * blended end of the ground up into frame; scrolling the mottling over a fixed height field is what
+ * shows the miles passing, and the banks have no along-Z features at their scale to give the
+ * stillness away.
+ */
+function createTerrainGeometry(environment: Environment): THREE.BufferGeometry {
+  const look = environmentLook[environment];
+  const rowSize = TERRAIN_SEGMENTS_X + 1;
+  const vertexCount = rowSize * (TERRAIN_SEGMENTS_Z + 1);
+  const positions = new Float32Array(vertexCount * 3);
+  const colors = new Float32Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
+  const indices = new Uint16Array(TERRAIN_SEGMENTS_X * TERRAIN_SEGMENTS_Z * 6);
+  const groundColor = new THREE.Color(look.base);
+  const bankColor = new THREE.Color(look.grain);
+  const color = new THREE.Color();
+  const phase = environment === "desert" ? 0.4 : environment === "city" ? 2.1 : 4.2;
+
+  for (let row = 0; row <= TERRAIN_SEGMENTS_Z; row += 1) {
+    const depth = row / TERRAIN_SEGMENTS_Z;
+    const z = TERRAIN_NEAR_Z - depth * TERRAIN_LENGTH;
+
+    for (let column = 0; column <= TERRAIN_SEGMENTS_X; column += 1) {
+      const across = column / TERRAIN_SEGMENTS_X;
+      const x = (across - 0.5) * TERRAIN_WIDTH;
+      const lateral = THREE.MathUtils.smoothstep(
+        Math.abs(x),
+        TERRAIN_ROAD_SHOULDER,
+        TERRAIN_ROAD_SHOULDER + TERRAIN_BANK_WIDTH,
+      );
+      const undulation =
+        Math.sin(Math.abs(x) * 0.075 + z * 0.05 + phase) * 0.5 +
+        Math.cos(Math.abs(x) * 0.035 - z * 0.075 + phase * 1.7) * 0.35;
+      const bankHeight = Math.max(0.3, 0.9 + undulation);
+      const height = TERRAIN_GROUND_Y + lateral * bankHeight;
+      const vertex = row * rowSize + column;
+      const positionIndex = vertex * 3;
+      const uvIndex = vertex * 2;
+
+      positions[positionIndex] = x;
+      positions[positionIndex + 1] = height;
+      positions[positionIndex + 2] = z;
+      uvs[uvIndex] = across;
+      uvs[uvIndex + 1] = depth;
+
+      const tint = Math.min(0.42, 0.08 + lateral * 0.25 + Math.max(0, undulation) * 0.04);
+      color.copy(groundColor).lerp(bankColor, tint);
+      colors[positionIndex] = color.r;
+      colors[positionIndex + 1] = color.g;
+      colors[positionIndex + 2] = color.b;
+    }
+  }
+
+  let index = 0;
+  for (let row = 0; row < TERRAIN_SEGMENTS_Z; row += 1) {
+    for (let column = 0; column < TERRAIN_SEGMENTS_X; column += 1) {
+      const a = row * rowSize + column;
+      const b = a + 1;
+      const c = a + rowSize;
+      const d = c + 1;
+      indices[index++] = a;
+      indices[index++] = b;
+      indices[index++] = c;
+      indices[index++] = b;
+      indices[index++] = d;
+      indices[index++] = c;
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * Detail for the apron: soft mottling at two scales, drawn in grey so it multiplies the per-vertex
+ * world colour rather than replacing it. Without it the apron is a single flat tint, which is what
+ * made it read as a sheet laid over the world rather than as ground.
+ *
+ * Drawn per world (see TERRAIN_DETAIL), so the ground under a dune is not the ground under a paving
+ * slab: the same two scales of mottling, at this world's tile size and pressed this hard.
+ */
+function createTerrainPattern(environment: Environment): THREE.CanvasTexture {
+  const detail = TERRAIN_DETAIL[environment];
+  const size = 256;
+  const { canvas, context } = canvasContext(size, size);
+  // The alphas below are the drawing's, turned up by this world's ink and capped so no setting can
+  // put hard blotches on the ground.
+  const ink = (alpha: number) => Math.min(0.6, alpha * detail.ink);
+  const blotchInk = ink(0.1);
+
+  context.fillStyle = "#c4c4c4";
+  context.fillRect(0, 0, size, size);
+
+  // Broad blotches first: the low-frequency variation that reads as uneven ground at a distance.
+  for (let blotch = 0; blotch < detail.blotches; blotch += 1) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const radius = 18 + Math.random() * 46;
+    const shade = Math.random() > 0.5 ? 255 : 140;
+    const gradient = context.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, `rgba(${shade},${shade},${shade},${blotchInk})`);
+    gradient.addColorStop(1, `rgba(${shade},${shade},${shade},0)`);
+    context.fillStyle = gradient;
+    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
+
+  // Then grain, at the scale the apron is actually seen at.
+  for (let speck = 0; speck < detail.specks; speck += 1) {
+    const shade = Math.random() > 0.5 ? 255 : 120;
+    context.fillStyle = `rgba(${shade},${shade},${shade},${ink(0.05 + Math.random() * 0.16)})`;
+    context.fillRect(
+      Math.random() * size,
+      Math.random() * size,
+      1 + Math.random() * 4,
+      1 + Math.random() * 3,
+    );
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(TERRAIN_WIDTH / detail.tile, TERRAIN_LENGTH / detail.tile);
+  texture.anisotropy = 4;
+  return texture;
+}
+
+/**
+ * Alpha ramp for the apron: opaque under the runner, transparent once the generated landscape should
+ * be showing through, and eased across the band in between so the two layers meet without a line.
+ */
+function createTerrainFade(): THREE.CanvasTexture {
+  const width = 2;
+  const height = 256;
+  const { canvas, context } = canvasContext(width, height);
+  const image = context.createImageData(width, height);
+
+  for (let y = 0; y < height; y += 1) {
+    // Canvas textures flip vertically: the top row is v = 1, the far end of the terrain.
+    const depth = 1 - y / (height - 1);
+    const progress = THREE.MathUtils.clamp(
+      (depth - TERRAIN_FADE_START) / (TERRAIN_FADE_END - TERRAIN_FADE_START),
+      0,
+      1,
+    );
+    const eased = progress * progress * (3 - 2 * progress);
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      image.data[offset] = 255;
+      image.data[offset + 1] = Math.round((1 - eased) * 255);
+      image.data[offset + 2] = 255;
+      image.data[offset + 3] = 255;
+    }
+  }
+
+  context.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  return texture;
+}
 
 /** Camera widens as the run accelerates so the horizon pushes out with the speed. */
 const BASE_FOV = 46;
@@ -49,16 +326,33 @@ const MAX_FOV = 58;
 /** The camera rig, as the canvas is created: a fixed height looking slightly down at a fixed point. */
 const CAMERA_POSITION: [number, number, number] = [0, 3.4, 11.5];
 const CAMERA_TARGET: [number, number, number] = [0, 1.5, -22];
+/**
+ * How much of a lane change the camera takes with the runner, 0 being the old fixed rig and 1 a
+ * camera welded to the runner's shoulder.
+ *
+ * A lane change is 2.4 m of sideways travel, and the camera was pinned to the middle of the road, so
+ * all of it showed up as the runner sliding across a frame whose ground never moved: the character
+ * crossed a quarter of the screen while the world under it stayed put, which is what makes the
+ * movement read as unreal. Moving the camera takes half of the travel out of the runner's screen
+ * position and gives it to the ground instead — the camera slides one way, the road, apron, and
+ * obstacles hold still in world space, so they sweep the other way across the frame, and the two
+ * halves still add up to exactly the runner's real 2.4 m of step.
+ *
+ * The ground is translated, not re-aimed: the camera keeps the rig's fixed orientation, so this is a
+ * lateral pan with the perspective shear a real step has (near ground swings wide, far ground barely
+ * moves) rather than a rotation. At 0 the runner skates over a frozen world again; at 1 the runner is
+ * pinned to the centre of the frame and only the world reads the lane change.
+ */
+const CAMERA_LATERAL_FOLLOW = 0.5;
 
 /**
  * Where the game's own horizon sits, as a fraction down the frame.
  *
  * The ground plane vanishes at the camera's eye level, so the horizon lies one pitch angle above the
  * camera's forward direction; against a vertical half-field of view that is where it lands on screen.
- * At the base field of view this is 43.3% down the frame and 44.9% at the widest, and the road ribbon
- * dissolves into the generated world at about 50% — so the 44-50% band is the only place the two
- * layers meet. Published as `--game-horizon` for the vertical lock, which has to know the line the
- * generated horizon may not cross.
+ * At the base field of view this is 43.3% down the frame and 44.9% at the widest. The local apron
+ * dissolves below this line rather than reaching it, so the band belongs to the generated landscape.
+ * Published as `--game-horizon` for the vertical lock, which keeps the generated horizon above it.
  */
 function gameHorizon(fov: number): number {
   const drop = CAMERA_POSITION[1] - CAMERA_TARGET[1];
@@ -105,70 +399,6 @@ type RunnerSceneProps = {
 /** Content in flight: a spawn from the field, plus the identity this scene gives it. */
 type Obstacle = ObstacleSpawn & { id: number };
 type Coin = CoinSpawn & { id: number };
-
-type EnvironmentLook = {
-  ambient: string;
-  key: string;
-  contrast: number;
-  base: string;
-  grain: string;
-  line: string;
-  edge: string;
-  block: string;
-  blockAccent: string;
-  gate: string;
-  wall: string;
-  coin: string;
-  coinGlow: string;
-};
-
-const environmentLook: Record<Environment, EnvironmentLook> = {
-  desert: {
-    ambient: "#e6a86f",
-    key: "#ffd9a0",
-    contrast: 0.9,
-    base: "#7d4629",
-    grain: "#96603d",
-    line: "#ffd489",
-    edge: "#edb072",
-    block: "#c98a5a",
-    blockAccent: "#7d4a2c",
-    gate: "#e0b070",
-    wall: "#b1743f",
-    coin: "#ffd777",
-    coinGlow: "#ff9f45",
-  },
-  city: {
-    ambient: "#2b4d78",
-    key: "#9fd8ff",
-    contrast: 1,
-    base: "#182533",
-    grain: "#283c4e",
-    line: "#51e4ff",
-    edge: "#2f7fa8",
-    block: "#2b3440",
-    blockAccent: "#51e4ff",
-    gate: "#51e4ff",
-    wall: "#39424f",
-    coin: "#8ff2ff",
-    coinGlow: "#1fa8d8",
-  },
-  forest: {
-    ambient: "#3d7f6b",
-    key: "#c9ffd6",
-    contrast: 0.9,
-    base: "#173429",
-    grain: "#244835",
-    line: "#9af29d",
-    edge: "#3f7a55",
-    block: "#6b4a2f",
-    blockAccent: "#3f6b45",
-    gate: "#5d8f5a",
-    wall: "#4a5a4f",
-    coin: "#b6ff9e",
-    coinGlow: "#4fd07a",
-  },
-};
 
 function canvasContext(width: number, height: number) {
   const canvas = document.createElement("canvas");
@@ -227,8 +457,8 @@ function createRoadPattern(environment: Environment): THREE.CanvasTexture {
 }
 
 /**
- * Alpha ramp for the road: solid under the runner, dissolving with distance and toward the
- * edges so the Orbis video supplies the terrain, weather, and horizon.
+ * Alpha ramp for the road: solid under the runner, then blending into the local terrain with
+ * distance and toward the edges.
  */
 function createRoadFade(): THREE.CanvasTexture {
   const width = 128;
@@ -236,8 +466,7 @@ function createRoadFade(): THREE.CanvasTexture {
   const { canvas, context } = canvasContext(width, height);
   const image = context.createImageData(width, height);
 
-  // The ribbon is solid under the runner and dissolves within about 20 m, so everything
-  // beyond it is genuinely the generated world rather than a surface laid over it.
+  // The ribbon is solid under the runner and dissolves beyond it so the terrain apron reads through.
   const distanceAlpha = (v: number) => {
     if (v <= 0.15) return 1;
     if (v <= 0.4) return 1 - ((v - 0.15) / 0.25) * 0.55;
@@ -319,25 +548,49 @@ function publishWorldMotion(
 }
 
 /**
- * Subscribes to the world tone itself so a change re-renders the road only, not the whole runner.
+ * Subscribes to the world tone so the road can be graded without re-rendering the runner.
  */
 function World({ environment, speedRef }: { environment: Environment; speedRef: { current: number } }) {
   const tone: WorldTone = useWorldTone();
   const look = environmentLook[environment];
   const pattern = useMemo(() => createRoadPattern(environment), [environment]);
   const fade = useMemo(() => createRoadFade(), []);
+  const terrain = useMemo(() => createTerrainGeometry(environment), [environment]);
+  const terrainDetail = TERRAIN_DETAIL[environment];
+  const terrainPattern = useMemo(() => createTerrainPattern(environment), [environment]);
+  const terrainFade = useMemo(() => createTerrainFade(), []);
   const grade = useMemo(() => roadGrade(environment, tone), [environment, tone]);
+  // The apron is a second surface over the same generated world, so it is graded from the same
+  // measurement as the ribbon. Grey, not tinted: its per-vertex colours are already this world's, and
+  // a hue on top of them would be this module disagreeing with `environmentLook` about the world.
+  const terrainColor = useMemo<[number, number, number]>(
+    () => [grade.terrain, grade.terrain, grade.terrain],
+    [grade.terrain],
+  );
 
   useEffect(() => () => pattern.dispose(), [pattern]);
   useEffect(() => () => fade.dispose(), [fade]);
+  useEffect(() => () => terrain.dispose(), [terrain]);
+  useEffect(() => () => terrainPattern.dispose(), [terrainPattern]);
+  useEffect(() => () => terrainFade.dispose(), [terrainFade]);
   // Published so the grade can be inspected from the console or a screenshot tool.
   useEffect(() => {
     document.documentElement.style.setProperty("--road-grade", grade.scale.toFixed(3));
     document.documentElement.style.setProperty("--road-grade-source", grade.measured ? "frames" : "preset");
-  }, [grade]);
+    document.documentElement.style.setProperty("--terrain-grade", grade.terrain.toFixed(3));
+    // What this world's apron was actually drawn with: the mottling is generated per environment, so
+    // "which tile did the city get" is a question only the applying code can answer.
+    document.documentElement.style.setProperty("--terrain-tile", String(terrainDetail.tile));
+    document.documentElement.style.setProperty("--terrain-ink", String(terrainDetail.ink));
+  }, [grade, terrainDetail]);
 
   useFrame((_, delta) => {
+    // Each surface is scrolled one tile per `speed * delta` metres, divided by the world size of its
+    // own tile, so the two carry the same ground speed despite repeating at different scales.
     pattern.offset.y += (speedRef.current * delta) / ROAD_TILE_WORLD;
+    // Only the colour map scrolls. The alpha map is the depth fade and stays where the world put it,
+    // which is what lets the apron be redrawn under the runner without the fade leaving its depth.
+    terrainPattern.offset.y += (speedRef.current * delta) / terrainDetail.tile;
   });
 
   return (
@@ -352,6 +605,18 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
         color={look.key}
         shadow-mapSize={[1024, 1024]}
       />
+      <mesh geometry={terrain} renderOrder={0} receiveShadow>
+        <meshStandardMaterial
+          map={terrainPattern}
+          alphaMap={terrainFade}
+          color={terrainColor}
+          transparent
+          depthWrite={false}
+          vertexColors
+          roughness={0.98}
+          metalness={0}
+        />
+      </mesh>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, ROAD_CENTER_Z]} receiveShadow>
         <planeGeometry args={[ROAD_WIDTH, ROAD_LENGTH]} />
         <meshStandardMaterial
@@ -364,6 +629,171 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
         />
       </mesh>
     </>
+  );
+}
+
+/**
+ * The roadside: the blocks that line the run, and the lit panels on them.
+ *
+ * One unit cube and one unit plane, instanced — so the whole roadside is two draw calls whatever a
+ * world decides to put beside the road. The layout is fixed (see `planRoadside`); this component only
+ * moves it. Each piece lives at a fixed offset in a repeating cycle of Z, and the cycle is wrapped by
+ * the distance travelled, so a piece leaving the far end has already reappeared behind the runner:
+ * nothing spawns, nothing is culled, and no React state changes per frame.
+ *
+ * The panels are the interesting half. Their picture is a frame of the live generated world, sampled
+ * out of the SDK's own video by `src/orbis/world-frame`, so the roadside wears the place the player
+ * is running through and a change of world repaints it. Until there is a world to show — the opening
+ * seconds, a run in local world mode — they carry `createPosterArt`'s abstract panel for that world,
+ * because a lit panel with nothing on it is a black rectangle.
+ */
+function Roadside({ environment, speedRef }: { environment: Environment; speedRef: { current: number } }) {
+  const plan = useMemo(() => planRoadside(environment), [environment]);
+  const art = useMemo(() => createPosterArt(environment), [environment]);
+  const fallback = useMemo(() => {
+    const texture = new THREE.CanvasTexture(art);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    // The middle band of the frame rather than the whole 16:9 picture: a panel is wider than it is
+    // tall, and the part of a generated world worth putting on one is the horizon it holds, which
+    // sits there.
+    texture.repeat.set(1, 0.82);
+    texture.offset.set(0, 0.09);
+    return texture;
+  }, [art]);
+  const panelMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        map: fallback,
+        transparent: true,
+        opacity: 0.96,
+        depthWrite: false,
+        // Panels are signage: they should read as lit even in a world lit like the desert.
+        toneMapped: false,
+      }),
+    [fallback],
+  );
+  const massGeometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
+  const panelGeometry = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
+  const massMaterial = useMemo(
+    () => new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0.02 }),
+    [],
+  );
+  const masses = useRef<THREE.InstancedMesh>(null);
+  const panels = useRef<THREE.InstancedMesh>(null);
+  const scratch = useRef(new THREE.Matrix4());
+  const tint = useRef(new THREE.Color());
+  const travel = useRef(0);
+  const live = useRef<THREE.CanvasTexture | undefined>(undefined);
+  const liveRevision = useRef(-1);
+
+  useEffect(() => () => massGeometry.dispose(), [massGeometry]);
+  useEffect(() => () => panelGeometry.dispose(), [panelGeometry]);
+  useEffect(() => () => massMaterial.dispose(), [massMaterial]);
+  useEffect(() => () => fallback.dispose(), [fallback]);
+  useEffect(
+    () => () => {
+      live.current?.dispose();
+      panelMaterial.dispose();
+    },
+    [panelMaterial],
+  );
+
+  // Per-piece colour, set once per layout: the matrices move every frame, the palette does not.
+  useEffect(() => {
+    const mesh = masses.current;
+    if (!mesh) return;
+    plan.masses.forEach((mass, index) => mesh.setColorAt(index, tint.current.set(mass.color)));
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [plan]);
+
+  useEffect(() => {
+    const mesh = panels.current;
+    if (!mesh) return;
+    plan.posters.forEach((poster, index) => mesh.setColorAt(index, tint.current.set(poster.color)));
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [plan]);
+
+  // Development-only readout. The pieces exist in the scene and nowhere in the DOM, so "how much of it
+  // is there, and has the scroll actually reached the ground" is not a question a screenshot can
+  // answer. Same reasoning as `window.__orbisWorld`.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __roadside?: () => unknown }).__roadside = () => ({
+      pieces: plan.masses.length,
+      panels: plan.posters.length,
+      travel: Math.round(travel.current * 10) / 10,
+      near: Math.max(...plan.masses.map((mass) => roadsideZ(mass.offset, travel.current))).toFixed(1),
+      far: Math.min(...plan.masses.map((mass) => roadsideZ(mass.offset, travel.current))).toFixed(1),
+      panelSource: worldFrameRevision() > 0 ? "live" : "fallback",
+    });
+  }, [plan]);
+
+  useFrame((_, delta) => {
+    // The road's own distance, so the roadside and the ribbon are the same ground moving.
+    travel.current += speedRef.current * delta;
+    const matrix = scratch.current;
+    const massMesh = masses.current;
+    const panelMesh = panels.current;
+    if (!massMesh || !panelMesh) return;
+
+    plan.masses.forEach((mass, index) => {
+      const z = roadsideZ(mass.offset, travel.current);
+      const size = Math.max(0.001, roadsideTaper(z));
+      const height = mass.height * size;
+      matrix.makeScale(mass.width, height, mass.depth);
+      matrix.setPosition(mass.x, mass.baseY + height / 2, z);
+      massMesh.setMatrixAt(index, matrix);
+    });
+    massMesh.instanceMatrix.needsUpdate = true;
+
+    plan.posters.forEach((poster, index) => {
+      const z = roadsideZ(poster.offset, travel.current);
+      const size = Math.max(0.001, roadsideTaper(z));
+      matrix.makeScale(poster.width * size, poster.height * size, 1);
+      // Lifted from the piece's base rather than from the panel's own centre, so it stays where it was
+      // put on the face as that piece shrinks into the far taper.
+      matrix.setPosition(poster.x, poster.baseY + (poster.y - poster.baseY) * size, z);
+      panelMesh.setMatrixAt(index, matrix);
+    });
+    panelMesh.instanceMatrix.needsUpdate = true;
+
+    // The world's own picture, when there is one. Sampled elsewhere: the element it comes from
+    // belongs to the SDK's surface, and this runs inside the render loop.
+    const frame = worldFrameCanvas();
+    if (!frame) return;
+    let texture = live.current;
+    if (!texture) {
+      texture = new THREE.CanvasTexture(frame);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.repeat.copy(fallback.repeat);
+      texture.offset.copy(fallback.offset);
+      live.current = texture;
+      panelMaterial.map = texture;
+    }
+    const revision = worldFrameRevision();
+    if (revision !== liveRevision.current) {
+      liveRevision.current = revision;
+      texture.needsUpdate = true;
+    }
+  });
+
+  return (
+    <group>
+      <instancedMesh
+        key={`roadside-masses-${environment}`}
+        ref={masses}
+        args={[massGeometry, massMaterial, plan.masses.length]}
+        frustumCulled={false}
+      />
+      {plan.posters.length > 0 && (
+        <instancedMesh
+          key={`roadside-panels-${environment}`}
+          ref={panels}
+          args={[panelGeometry, panelMaterial, plan.posters.length]}
+          frustumCulled={false}
+        />
+      )}
+    </group>
   );
 }
 
@@ -584,6 +1014,9 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
   const lastComboMilestone = useRef(0);
   const lastProgress = useRef(-1);
   const speedRef = useRef(environmentPace[environment].baseSpeed);
+  /** Sideways travel in metres, damped: the source of both the world's parallax and the camera pan. */
+  const stride = useRef(0);
+  /** `stride` in the units the DOM layer is told to parallax by: -1, 0, or 1 at the lane centres. */
   const lateral = useRef(0);
   const impact = useRef(0);
   /** Set on impact and decayed over about a second: the runner visibly recovers. */
@@ -656,18 +1089,24 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
     state.score += delta * 12;
 
     // Keep the generated world and the runner moving together: the camera opens up as the
-    // run accelerates, and the video layer scales with the same value.
-    lateral.current = THREE.MathUtils.damp(lateral.current, (LANES[lane] ?? 0) / 2.4, 8, delta);
+    // run accelerates, and the video layer scales with the same value. The lateral travel is damped
+    // on the same curve the runner's own lane change is, so the body, the camera, and the ground it
+    // is stepping across all leave the old lane together and settle together.
+    stride.current = THREE.MathUtils.damp(stride.current, LANES[lane] ?? 0, 8, delta);
+    lateral.current = stride.current / Math.abs(LANES[0]);
     impact.current = Math.max(0, impact.current - delta * 2.2);
 
+    // Half of the step is the runner crossing the frame and half is the ground sweeping under it; see
+    // `CAMERA_LATERAL_FOLLOW`. The rig is not re-aimed, so the ground shears with real perspective.
+    const cameraX = stride.current * CAMERA_LATERAL_FOLLOW;
     if (impact.current > 0.01) {
       camera.position.set(
-        Math.sin(clock.elapsedTime * 48) * impact.current * 0.07,
+        cameraX + Math.sin(clock.elapsedTime * 48) * impact.current * 0.07,
         3.4 - impact.current * 0.3,
         11.5 + impact.current * 0.25,
       );
     } else {
-      camera.position.set(0, 3.4, 11.5);
+      camera.position.set(cameraX, 3.4, 11.5);
     }
 
     publishWorldMotion(environment, speed, lateral.current, impact.current, clock.elapsedTime);
@@ -809,6 +1248,7 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
   return (
     <>
       <World environment={environment} speedRef={speedRef} />
+      <Roadside environment={environment} speedRef={speedRef} />
       <Player lane={lane} characterId={characterId} animation={animation} speedRef={speedRef} />
       {/* The name carries the world version so a spawn or cull re-renders the list without
           remounting the pieces that are already in flight. */}

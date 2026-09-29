@@ -222,8 +222,11 @@ try {
   }
   console.log("start button:", await evaluate(`document.querySelector(".start-button")?.textContent`));
 
-  // The headline check for this build: the homepage should generate and show a moving world on
-  // its own, before any run starts.
+  // The homepage is local now, and that is the headline claim of this build rather than the moving
+  // world it used to be: the menu selects a world and asks for nothing. Read as facts — the layer's
+  // opacity, whether a video element exists at all, what the session behind the page reports — because
+  // "the menu is local" is exactly the kind of claim that quietly stops being true, and a menu that
+  // connects is a session on the account's one slot that nobody asked to watch.
   const menuWorld = `(() => {
     const layer = document.querySelector(".world-layer");
     const local = document.querySelector(".world-local");
@@ -235,8 +238,8 @@ try {
       videoState: layer?.dataset.video,
       localWorld: local?.dataset.world,
       layerOpacity: layer ? getComputedStyle(layer).opacity : null,
-      liveBadge: Boolean(document.querySelector(".stage-live")),
-      liveCard: document.querySelector(".world-hazards i.is-live")?.textContent ?? null,
+      card: document.querySelector(".world-card.selected .world-copy strong")?.textContent ?? null,
+      landscape: document.querySelector(".landscape-name")?.textContent ?? null,
       video: video ? {
         readyState: video.readyState,
         width: video.videoWidth,
@@ -362,31 +365,34 @@ try {
     console.log(`world selected: ${wantedWorld} -> ${picked}`);
   }
 
-  const worldWaitStart = Date.now();
-  let menuLive = null;
-  for (let attempt = 0; attempt < 260; attempt += 1) {
-    const state = parseMenu(await evaluate(menuWorld));
-    if (attempt % 10 === 0) {
-      console.log(`menu world t+${Math.round((Date.now() - worldWaitStart) / 1000)}s: ${JSON.stringify(state)}`);
-    }
-    if (state.videoState === "streaming" && state.video?.readyState >= 2) {
-      menuLive = state;
-      break;
-    }
-    await sleep(1000);
+  const menuLocal = parseMenu(await evaluate(menuWorld));
+  console.log("menu state:        " + JSON.stringify(menuLocal));
+  console.log("menu session:      " + (await evaluate(worldState)));
+  const menuFaults = [];
+  if (menuLocal.layerOpacity !== "0") {
+    menuFaults.push(`the world layer is visible (opacity ${menuLocal.layerOpacity})`);
   }
+  if (menuLocal.status !== "disconnected") {
+    menuFaults.push(`the world link is ${menuLocal.status}, expected disconnected`);
+  }
+  if (menuLocal.videoState !== "off") {
+    menuFaults.push(`the video is ${menuLocal.videoState}, expected off`);
+  }
+  if (menuLocal.video) menuFaults.push("a video element exists in the menu");
+  let menuSession = null;
+  try {
+    menuSession = JSON.parse((await evaluate(worldState)) ?? "null");
+  } catch {
+    menuFaults.push("the world bus is not readable, so the menu's session state is unknown");
+  }
+  if (menuSession?.session?.started) menuFaults.push("a session is generating with no run on screen");
+  if (menuSession?.runActive) menuFaults.push("the menu reports a live run");
   console.log(
-    `menu world live after: ${Math.round((Date.now() - worldWaitStart) / 1000)}s`,
-    menuLive ? JSON.stringify(menuLive) : "NOT LIVE",
+    menuFaults.length
+      ? `!! the menu is not local: ${menuFaults.join("; ")}`
+      : "menu is local: no session, no video, and the world layer is hidden",
   );
-
-  // "Moving" has to mean the video clock advances, not that a frame exists.
-  const menuClock = async () => parseMenu(await evaluate(menuWorld)).video?.currentTime ?? null;
-  const clockA = await menuClock();
-  await sleep(4000);
-  const clockB = await menuClock();
-  console.log(`menu world motion: video clock ${clockA}s -> ${clockB}s over 4s of wall clock`);
-  console.log(`menu world state:  ${await evaluate(worldState)}`);
+  if (menuFaults.length) process.exitCode = 1;
 
   // `LANDSCAPE=1` builds a picture in the page and hands it to the real upload control, which is the
   // whole feature end to end: the file is prepared, measured, cropped, uploaded, pinned as the
@@ -418,26 +424,18 @@ try {
     })()`);
     console.log(`landscape upload:  ${built}`);
     await sleep(2500);
-    // The menu holds the run while the picture is pinned — pinning is a rebuild (reset, image,
-    // start), and one landing under a run would be a hard cut through the dive. So this waits for the
-    // control to come back rather than assuming a delay, and reports how long that took.
-    const readButton = `(() => {
-      const button = document.querySelector(".start-button");
-      return JSON.stringify({ label: button?.textContent ?? null, disabled: button?.disabled ?? null,
-        pinning: button?.dataset.pinning ?? null });
-    })()`;
-    const pinWait = Date.now();
-    let button = null;
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      button = JSON.parse((await evaluate(readButton)) ?? "null");
-      if (attempt % 5 === 0 || !button?.disabled) {
-        console.log(`  pin wait +${Math.round((Date.now() - pinWait) / 1000)}s: ${JSON.stringify(button)}`);
-      }
-      if (!button?.disabled) break;
-      await sleep(1000);
-    }
+    // The menu stages the picture and does not pin it. Pinning is a rebuild — reset, image, start — and
+    // one landing under a run would be a hard cut through the dive, so it happens when the run is
+    // loaded, which is the loader's second stage ("Pinning your landscape"). What the menu owes the
+    // player is the staged choice and a Start that is still theirs to press.
     console.log(`landscape card:    ${await evaluate(landscapeCard)}`);
-    console.log(`landscape pinned:  ${await evaluate(worldState)}`);
+    console.log(`landscape staged:  ${await evaluate(menuWorld)}`);
+    console.log(
+      `start button:      ${await evaluate(`(() => {
+        const button = document.querySelector(".start-button");
+        return JSON.stringify({ label: button?.textContent ?? null, disabled: button?.disabled ?? null });
+      })()`)}`,
+    );
 
     // The upload control is new interface, and a phone is where new interface breaks — a preview, a
     // name, a clear button and a hint in a column that is already narrow. The session is up by now, so
@@ -557,10 +555,59 @@ try {
 
   await evaluate(`document.querySelector(".start-button").click()`);
 
+  // The world is loaded at entry now, so Start opens a loading screen rather than the menu's dive. On a
+  // cold session the run does not exist for twenty to forty seconds, and every sample below would
+  // describe the loader until it did — which is how this probe came to report a healthy run as one
+  // that never started. So the loader is followed by its own stages, and the dive is measured from
+  // where it actually begins: the first frame after the loading surface leaves.
+  const loaderState = `(() => {
+    const loader = document.querySelector(".world-loader");
+    const w = window.__orbisWorld?.();
+    return JSON.stringify({
+      surface: document.documentElement.dataset.surface ?? null,
+      loader: Boolean(loader),
+      world: loader?.dataset.world ?? null,
+      stage: loader?.dataset.stage ?? null,
+      armed: loader?.dataset.armed ?? null,
+      timedOut: loader?.dataset.timedOut ?? null,
+      title: loader?.querySelector(".loader-title")?.textContent ?? null,
+      line: loader?.querySelector(".loader-line")?.textContent ?? null,
+      status: w?.status ?? null, video: w?.videoState ?? null, pinning: w?.pinning ?? null,
+      started: w?.session?.started ?? null,
+      hud: Boolean(document.querySelector(".run-hud")),
+    });
+  })()`;
+
+  const loadStart = Date.now();
+  let loadStage = null;
+  let loaderReport = null;
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    loaderReport = parseMenu(await evaluate(loaderState));
+    if (loaderReport.stage !== loadStage) {
+      loadStage = loaderReport.stage;
+      console.log(
+        `load t+${Math.round((Date.now() - loadStart) / 1000)}s: ${JSON.stringify(loaderReport)}`,
+      );
+    }
+    if (loaderReport.surface !== "loading") break;
+    await sleep(200);
+  }
+  console.log(
+    `world loaded after ${Math.round((Date.now() - loadStart) / 1000)}s: surface ` +
+      `${loaderReport?.surface}, ${loaderReport?.status}/${loaderReport?.video}, started ` +
+      `${loaderReport?.started}, pinning ${loaderReport?.pinning}, timed out ${loaderReport?.timedOut}`,
+  );
+  // A loader that gave up is a run in local world mode, and the measurements below would describe it
+  // as if it were the generated one. That is a failure of this build, not of the comparison.
+  if (loaderReport?.timedOut === "true" && loaderReport?.started !== true) {
+    console.log("!! the loader gave up before the world was armed — this run is in local world mode");
+    process.exitCode = 1;
+  }
+
   // Screenshots take real time, so the clock is measured rather than assumed: a sample labelled
-  // t+700ms is taken 700ms after the click, whatever the capture in between cost. Capturing a frame
-  // mid-dive costs 1-3 s each in software-rendered headless Chrome, which distorts the very timing
-  // it is meant to show, so the dive frames are opt-in: DIVE_FRAMES=1.
+  // t+700ms is taken 700ms after the dive begins, whatever the capture in between cost. Capturing a
+  // frame mid-dive costs 1-3 s each in software-rendered headless Chrome, which distorts the very
+  // timing it is meant to show, so the dive frames are opt-in: DIVE_FRAMES=1.
   const diveFrames = process.env.DIVE_FRAMES === "1" && SHOT_PATH ? SHOT_PATH.replace(/\.png$/, ".dive") : null;
   const diveStart = Date.now();
   for (const [index, at] of [320, 700, 1050, 1500].entries()) {
@@ -782,6 +829,17 @@ try {
   // Bounds the prompt check below: what the run asked the model for, not what the menu did.
   const runBegan = Date.now();
 
+  /** The chunk counter either side of a window, which is what says whether the model produced. */
+  const parsedChunks = (from, to) => {
+    const before = from?.session?.chunk ?? null;
+    const after = to?.session?.chunk ?? null;
+    return {
+      from: before,
+      to: after,
+      produced: before !== null && after !== null && after > before,
+    };
+  };
+
   // The control for the paused measurement below: the same pixels, same window, while the world is
   // running. Without it a small paused number would be indistinguishable from a stalled video.
   const runningDelta = await evaluate(frameDelta);
@@ -813,12 +871,26 @@ try {
   // picture and says nothing — hence the settle, and hence the running control above taken with the
   // same code and the same window.
   await sleep(5000);
+  const pausedBefore = JSON.parse((await evaluate(worldState)) ?? "null");
   const pausedClockA = await evaluate(videoClock);
   const pausedDelta = await evaluate(frameDelta);
   const pausedClockB = await evaluate(videoClock);
+  const pausedAfter = JSON.parse((await evaluate(worldState)) ?? "null");
   console.log(`world pause:       ${JSON.stringify(pausedSession?.session ?? null)}`);
   console.log(`world paused: frames changed by ${pausedDelta} (control, while running: ${runningDelta}) over 2.5s, 5s after the pause`);
   console.log(`world paused: media clock ${pausedClockA}s -> ${pausedClockB}s`);
+  // What the pause is *for* is the chunk loop, since a paused session is a session that produces
+  // nothing: so the model's own chunk counter is the evidence that decides it, and the pixel delta is
+  // quoted beside it. The pixels are the weaker of the two by a long way — a live stream plays out the
+  // chunk it has already been handed, which reads as a moving picture for a second or two after the
+  // model has stopped, and a settle that lands inside that window reports a pause that never happened.
+  const pausedChunks = parsedChunks(pausedBefore, pausedAfter);
+  console.log(
+    `world pause cost: chunks ${pausedChunks.from} -> ${pausedChunks.to} across the paused window` +
+      (pausedChunks.produced
+        ? " — !! the model kept producing while the run was paused"
+        : " — nothing produced, as a paused session should"),
+  );
 
   await evaluate(pressSpace);
   await sleep(1200);
@@ -1124,10 +1196,34 @@ try {
   console.log("\n=== CONSOLE ===");
   console.log(logs.slice(-60).join("\n") || "(none)");
 
-  // Close the page target so React unmounts and the SDK ends its Reactor session —
-  // otherwise the leaked session blocks the next run (the account allows one at a time).
+  // End the session the way the app does, and wait for it to land. `pagehide` starts an *async*
+  // release — a token, a `disconnect`, a server-side session end — and the account allows one session
+  // at a time, so a probe that kills Chrome a fixed few seconds later leaves an orphan holding the
+  // slot until its twenty-minute lease runs out. This is not hypothetical: the run after this probe's
+  // old three-second sleep took fifty-five seconds to find a world, because the orphan it had just
+  // created was still occupying the account. The trace entry is the app's own record of the release,
+  // so the wait is on the thing itself rather than on a longer guess.
+  await evaluate(`window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }))`);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const released = JSON.parse(
+      (await evaluate(`(() => {
+        const entries = (window.__orbisTrace ?? []).filter((entry) => entry.what === "release");
+        return JSON.stringify({
+          status: window.__orbisWorld?.()?.status ?? null,
+          last: entries.length ? entries[entries.length - 1].detail : null,
+        });
+      })()`)) ?? "{}",
+    );
+    if (/ok \(attempt/.test(released.last ?? "") || attempt % 10 === 9) {
+      console.log(`release: ${JSON.stringify(released)}`);
+    }
+    if (released.status === "disconnected" && /ok \(attempt/.test(released.last ?? "")) break;
+    await sleep(1000);
+  }
+
+  // Only then close the page target, so React unmounts over a session that is already gone.
   await browserSocket.send("Target.closeTarget", { targetId: page.id });
-  await sleep(3000);
+  await sleep(500);
 
   pageSocket.close();
   browserSocket.close();

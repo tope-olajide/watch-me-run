@@ -22,6 +22,22 @@ export type RoadGrade = {
   scale: number;
   /** True when the numbers came from a live measurement rather than the world's preset. */
   measured: boolean;
+  /**
+   * Brightness multiplier for the local ground — the apron the ribbon is laid on.
+   *
+   * The apron and the ribbon are two game-owned surfaces over the same generated world, so leaving
+   * the apron out of the measurement let the two drift apart world by world: the ribbon is graded
+   * against the frames while the apron's per-vertex colour is a fixed preset, and in one live
+   * session that had the ribbon brightening about twice as much in the city as in the forest while
+   * the ground beside it never moved at all.
+   *
+   * Expressed as the measurement *relative to this world's own preset ground* rather than against a
+   * second calibration constant. The ribbon's `ribbonAtUnity` is a property of the ribbon's material
+   * and texture and says nothing about a different one, so reusing it would be wrong; the ratio gets
+   * the same answer without inventing numbers nobody has measured, and it is exactly 1 until frames
+   * arrive — which is why local world mode looks unchanged.
+   */
+  terrain: number;
 };
 
 type WorldGrade = {
@@ -57,8 +73,10 @@ type WorldGrade = {
  *
  * Since the distance haze went in, the sampler reads the ground band just under the horizon (where
  * the ribbon fades into the world) rather than the lower third (now haze). These presets were
- * measured on the old band, so they are only rough fallbacks for local mode; the live measurement
- * is what the road is actually graded against.
+ * measured on the old band, so they are only rough fallbacks for local world mode — the live
+ * measurement is what the ribbon is actually graded against. `ground` is now load-bearing in live
+ * mode too, as the baseline the local ground's multiplier is taken against (see `terrain`), so if
+ * these are ever re-measured on the horizon band they should be re-measured for both uses.
  */
 const worldGrades: Record<Environment, WorldGrade> = {
   desert: { ground: 53, ribbonAtUnity: 50, ratio: 1, min: 0.25, max: 2, tintPull: 0.4 },
@@ -68,11 +86,26 @@ const worldGrades: Record<Environment, WorldGrade> = {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+/**
+ * How far the local ground may follow the measurement.
+ *
+ * The same reasoning as the ribbon's own `min`/`max`, and the same risk if it is opened up: the
+ * point is to follow a world from noon to blackout, not to let a misread frame repaint the ground
+ * the runner is standing on. Tighter than the ribbon's, because the apron is a much larger area of
+ * the frame than the ribbon and a wrong value there is a whole field changing colour at once.
+ */
+const TERRAIN_MIN = 0.45;
+const TERRAIN_MAX = 1.75;
+
 export function roadGrade(environment: Environment, tone: WorldTone): RoadGrade {
   const world = worldGrades[environment];
   const measured = tone.live && tone.ground > 0;
   const ground = measured ? Math.max(4, tone.ground) : world.ground;
   const scale = clamp((ground * world.ratio) / world.ribbonAtUnity, world.min, world.max);
+  // Clamped against the world's own preset rather than against the clamped ribbon: the two surfaces
+  // have different calibrations, so tying the ground to the ribbon's limited travel would repeat the
+  // ribbon's ceiling in the ground as a second, invisible limit.
+  const terrain = measured ? clamp(ground / world.ground, TERRAIN_MIN, TERRAIN_MAX) : 1;
 
   // The colour lean is normalised to the same brightness, so tinting never doubles as exposure.
   const pull = measured ? world.tintPull : 0;
@@ -87,5 +120,6 @@ export function roadGrade(environment: Environment, tone: WorldTone): RoadGrade 
     ],
     scale,
     measured,
+    terrain,
   };
 }

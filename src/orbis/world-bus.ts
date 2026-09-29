@@ -9,10 +9,18 @@ import type { WorldView } from "./prompts";
  * The seam between the interface and the Orbis world.
  *
  * The world layer is loaded lazily so the first paint stays cheap, and it is mounted once at the
- * app level so one Reactor session survives the whole visit: the menu previews a world, a run
- * continues in that same stream, and going back to the menu keeps it alive. Because the layer
- * arrives after the interface, the interface talks to it through this bus instead of React
- * context — nothing remounts when the world shows up, and nothing breaks if it never does.
+ * app level so one Reactor session survives a whole run. Because the layer arrives after the
+ * interface, the interface talks to it through this bus instead of React context — nothing remounts
+ * when the world shows up, and nothing breaks if it never does.
+ *
+ * ## The menu does not ask for a world
+ *
+ * The choice of world and landscape is *staged* here — `select`, `selectLandscape` — and nothing is
+ * asked of Orbis until a run starts (`world.showWorld`). That is deliberate: a session is billed
+ * while it is ready, so a menu that generated a world behind itself was paying for frames nobody was
+ * playing. The cost of it is a wait at the start of a run, which is why the run has a loading screen
+ * (`src/WorldLoader`) that tracks exactly the steps below — connecting, generating, pinning, arming —
+ * and a fallback that hands the player a local-world run rather than a spinner that never ends.
  *
  * The bus also owns the two things that outlive a single surface: which world and which landscape
  * are selected (the menu sets them, the run and the layer read them), and the session state Orbis
@@ -256,7 +264,30 @@ export function subscribeChunks(listener: (tick: ChunkTick) => void): () => void
   };
 }
 
+/**
+ * What the menu's chip says, which is not what a live session's chip says.
+ *
+ * Before a run has asked for anything there is no connection to report on, and "Loading world
+ * engine" would be a promise the menu is not keeping. The live labels still apply inside a run, and
+ * to the couple of minutes a world can stay warm after one.
+ */
+export function menuWorldLabel(snapshot: WorldSnapshot): string {
+  return snapshot.status === "ready" || snapshot.status === "waiting" || snapshot.status === "connecting"
+    ? worldLabel(snapshot)
+    : "World starts with your run";
+}
+
 export const world = {
+  /**
+   * Records the choice this visit is going to make, without asking Orbis for anything.
+   *
+   * The menu calls this so the local backdrop behind it is the tint of the world the player picked;
+   * the world itself is asked for by the run (see `showWorld`).
+   */
+  select(environment: Environment): void {
+    selected = environment;
+    updateWorld({ world: environment });
+  },
   /** Morphs the live world into this environment, connecting if there is no session yet. */
   showWorld(environment: Environment, options?: { restart?: boolean }): void {
     selected = environment;
@@ -272,20 +303,21 @@ export const world = {
     pending = request;
   },
   /**
-   * Selects the picture the world is grown from, for the selected world, and asks for that world
-   * again so the layer pins it.
+   * Selects the picture the world is grown from, for the selected world.
    *
    * Passing null goes back to a world Orbis invents. Either way this replaces the landscape for the
    * whole visit rather than for a run: the player picked it as their landscape, and a run that
    * silently went back to a generated desert would be the feature quietly not working.
+   *
+   * Staged, not sent. Pinning is a rebuild — `reset`, the image, then `start` — and the menu is not
+   * the place for one any more: the picture is a *condition* of the next session, so it rides with
+   * the request the run makes. Setting `pinning` here would show the menu holding a run that has not
+   * been asked for; the layer raises it when it actually starts working on a picture it is not
+   * already holding.
    */
   selectLandscape(next: PreparedLandscape | null): void {
     landscape = next;
-    // Set before the request goes out, not when the layer starts working: the layer's effect runs a
-    // render later, and the menu has to be holding the run already when that render lands.
-    updateWorld({ landscape: next, pinning: true });
-    if (commands) commands.showWorld({ environment: selected, landscape: next });
-    else pending = { environment: selected, landscape: next };
+    updateWorld({ landscape: next });
   },
   /** The prompt view for a world: which environment, and whether the landscape is the player's. */
   view(environment: Environment = selected): WorldView {

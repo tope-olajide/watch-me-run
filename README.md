@@ -43,17 +43,34 @@ everything else, for the whole visit:
 App
 ├── WorldLayer (lazy)          src/orbis/WorldLayer.tsx   the only Reactor session
 │   ├── .world-video           the generated frames
-│   └── .world-local           per-world gradient until frames arrive
-├── MenuExperience             previews the world, picks a world and a runner
+│   └── .world-local           per-world gradient, and the menu's whole backdrop
+├── MenuExperience             picks a world and a runner — asks Orbis for nothing
+├── WorldLoader                asks for the world, names the wait, hands over to the run
 └── RunExperience (lazy)       deterministic runner + Orbis Director
 ```
 
 The interface talks to that layer through `src/orbis/world-bus.ts` — a tiny store with commands
-(`world.showWorld`, `world.sendPrompt`, `world.sendAudio`, `world.setPaused`, `world.selectLandscape`)
-and a snapshot (`useWorld()`). The layer is lazy, so the menu paints first and the world fades in
-behind it; because the layer never unmounts, a run continues inside the same generated stream and
-returning to the menu does not cut it. The road grade reads the world's tone from
-`src/orbis/world-palette.ts`, which samples the live frames.
+(`world.select`, `world.showWorld`, `world.sendPrompt`, `world.sendAudio`, `world.setPaused`,
+`world.selectLandscape`) and a snapshot (`useWorld()`). The layer is lazy, so the menu paints first.
+The road grade reads the world's tone from `src/orbis/world-palette.ts`, which samples the live frames.
+
+### The menu is local
+
+The menu selects and stages — which world, which runner, which landscape — and asks Orbis for
+nothing. It used to generate a world behind itself so there would be one to dive into, and it was
+paying for it: a session is billed whenever it is ready, so the menu was buying frames nobody was
+playing. Pressing Start opens `src/WorldLoader`, which requests the world and waits for it.
+
+That wait is the one real cost of the arrangement, so it is a surface rather than a disabled button.
+The loader names the step Orbis is on — connecting, generating, pinning a landscape, arming — from the
+session's own snapshot, counts the seconds, and falls back to a playable local-world run at 55 s
+(20 s once Orbis has reported an error, since a busy account is not something waiting fixes). The
+world keeps being retried behind the run, so a late arrival still lands mid-run.
+
+A world that a run has warmed stays warm for **60 s** after it ends (`IDLE_SESSION_CAP_MS`) and is
+hidden with `html[data-surface="menu"]` the whole time: a player who goes straight back into another
+run skips the loading screen entirely, and one who does not is not paying for a menu. Measured cold
+starts on this stack run 20–40 s, so a grace shorter than that would cost more than it saves.
 
 The bus is also the single source of truth for the two things that outlive one surface: which world
 and which **landscape** are selected, and what Orbis reports about the session (`state`: started,
@@ -150,16 +167,30 @@ the gates now refuse, and would let a wrong one move the world by 20%.
 
 ### Starting a run
 
-Starting is a dive into the world that is already generating behind the menu: the live frames push
-in and brighten, the interface blurs away, the world's name passes through frame, and the runner
-arrives inside the chunks that were already on their way. The same session keeps streaming through
-the whole transition, and the moment it begins the world layer is sent a *launch* prompt so the
-chunks landing next belong to the run rather than to the menu's establishing wide.
+Starting is two beats: `src/WorldLoader` asks for the world and waits until it is armed, then the dive
+plays over live frames — they push in and brighten, the interface blurs away, the world's name passes
+through frame, and the runner arrives inside the chunks that were already on their way. The session
+keeps streaming through the whole transition, and the moment it begins the world layer is sent a
+*launch* prompt so the chunks landing next belong to the run rather than to the menu's establishing
+wide.
 
-The dive is a phase machine in `src/App.tsx` (`menu → entering → run → exiting → menu`) plus CSS
-keyed off `html[data-entering]` / `html[data-exiting]`; `prefers-reduced-motion` gets the arrival
-without the ride. The run chunk is prefetched 800 ms after the menu appears so a lazy load cannot
-land in the middle of the dive.
+The dive is a phase machine in `src/App.tsx` (`menu → loading → entering → run → exiting → menu`)
+plus CSS keyed off `html[data-entering]` / `html[data-exiting]` / `html[data-surface]`;
+`prefers-reduced-motion` gets the arrival without the ride. The run chunk is prefetched 800 ms after
+the menu appears so a lazy load cannot land in the middle of the dive. The loading screen is held for
+at least 900 ms (`LOADING_MIN_MS`) so a world that is already warm renders as a screen rather than a
+flash.
+
+*Armed* means the session is ready, started, nothing is still being pinned into it, **and its first
+frames have reached the screen**. That last clause is not pedantry: `started` is the model's word for
+its loop being on, and the loader used to hand the run over on it alone — measured on a cold desert
+start, the loading screen left with `video: waiting` and the probe's first frame check read `null`,
+because the first frames landed after the player was already on screen. The wait for them is bounded
+at `LOADING_FRAMES_MS` (8 s), because the promise this screen has to keep is that a run always starts:
+a session that generates and never paints — autoplay blocked, a transport that stalled after the start
+— opens the run on the local backdrop instead, the same fallback as the timeout, with Orbis still
+trying underneath. The measured cost is about four seconds on a cold start (25 s → 29 s, then 37 s on
+a later run) in exchange for a dive that plays over real frames.
 
 Each world also brings its own beat: selecting a card swaps the launch prompt and paints that world's
 weather over the live frames for the length of the dive, with a line of copy and an ambience readout
@@ -299,11 +330,18 @@ the runtime lock measured the generated horizon at 0.42–0.46 against a game li
 same run's generated horizon steps (93.6, 78.3, 74.7 luma at contrasts of 3.0–4.9) show the crisp
 edge of the pinned frame carried through, rather than a skyline inferred out of texture.
 
-**Pinning costs a session restart**, and the menu holds the run for it: a starting image can only be
-pinned before `start`, and only `reset` clears one, so changing the landscape is a rebuilt world rather
-than a prompt swap. The Start button is disabled and renamed ("Pinning your landscape…") while that
-happens, because the alternative — the rebuild landing under a run — would be a hard cut through the
-dive, which is exactly what the first version of this did.
+**Pinning costs a session restart**, and the run waits for it on the loading screen: a starting image
+can only be pinned before `start`, and only `reset` clears one, so changing the landscape is a rebuilt
+world rather than a prompt swap. The pin belongs to the run rather than to the menu — the menu stages
+the picture, and the picture is a *condition* of the session the run asks for, so the wait is named
+where the work happens ("Pinning your landscape") instead of being a disabled Start button. The
+alternative — the rebuild landing under a run — would be a hard cut through the dive, which is exactly
+what the first version of this did.
+
+Measured on a headless run with a 671 KB picture, end to end: menu at t=0 with `pinning: false` and
+`status: disconnected` and an enabled Start button; Stage 2 (pinning) on the loader from t≈3 s;
+`has_image: true` at t=40 s; run at t=40 s, with `data-landscape` on the world layer and
+`has_image` true for the whole run.
 
 Measured: **9.0 s** (pinned in 9032 ms, world armed in 11562 ms), 8.5-9 s across two other runs, 13.9 s
 once through a link that was still recovering, and **36 s** once when the upload arrived while the
@@ -321,12 +359,19 @@ both: the world on the label line, the picture as the value.
 
 ## What to expect from Orbis
 
-The world takes a moment to become live, and the chip reports each stage:
+The world takes a moment to become live. A run starts with `src/WorldLoader` on screen, naming the
+step Orbis is on:
 
 - `Waking the world engine` — session request in flight
-- `Generating first frames` — WebRTC negotiated; usually 15-25 s to the first frame
-- `Live world streaming` — 1080p generated video with audio (the tier the app asks for)
-- `Local world mode` — no live world; the chip shows the real error and a retry
+- `Generating your world` — WebRTC negotiated and the conditions sent; usually 15-25 s to the first frame
+- `Pinning your landscape` — only when the player supplied one: `reset`, the image, then the seed
+- `Arming the run` — the delivery tier read from the offered list, then `start`, then the hand-over
+- `Local world mode` — no live world. At 55 s the wait is given up and the run starts anyway (20 s once
+  Orbis has reported an error), and the chip in the run carries the real error and a retry
+
+The menu's chip says something different on purpose — `World starts with your run` — because before a
+run nothing has been asked for, and "Loading world engine" there would be a promise the menu is not
+keeping. The menu's backdrop is the local per-world gradient (`data-world` follows the selected card).
 
 The chip never shows an SDK string. A transport symptom on a link that was live reads "World link
 interrupted — reconnecting", because the recovery effect is already retrying it; the same symptom on a
@@ -375,10 +420,57 @@ One thing to know if you change the director: Orbis reads the prompt that is in 
 measured 7 asks across 7 chunks with none overwritten, where the version without the gate spent 6 asks
 on 5 chunks and lost one.
 
-The account allows **one concurrent Orbis session per model**, so the app holds one and recycles
-it: it disconnects on `pagehide`, refreshes its session after 25 minutes of idling, and retries
-with the reason on screen while a closed session is still releasing its slot. Gameplay never waits
-for it — the runner is fully playable in local world mode.
+The account allows **one concurrent Orbis session per model**, so the app holds one and recycles it:
+it disconnects on `pagehide`, and lets the session go **60 s** after a run ends — the menu is local, so
+an open session there is one nobody is watching, and the grace window is only there so that going
+straight back into another run skips the loading screen. While the menu is up the world layer is hidden
+(`html[data-surface="menu"]`) and the recovery effect is gated on a run being on screen, so a blip in
+the menu cannot connect a world the player did not ask for. It retries with the reason on screen while
+a closed session is still releasing its slot. Gameplay never waits for it — the runner is fully
+playable in local world mode.
+
+A drop *during* a run is the case that used to end quietly in local world mode, and it is worth being
+precise about why. The recovery effect reconnects the link, and the SDK hands back a session with
+nothing armed on it — no prompt, no image, no running generation — so someone has to arm it again, and
+the app's only `start()` is the arming pass. That pass returned early whenever a run was on screen:
+re-arming is `reset` plus `start`, and a world rebuilt under the player's feet is worse than the one
+they are already running through, so the guard earns its keep. The exception is a link that came back
+*during* that run. The request still stands, the run is why it stands, and the arming went with the
+session that dropped — which is precisely what an empty `applied` under a live run means, since
+`applied` is cleared the moment the link leaves `ready`. Without that exception a recovered link comes
+back connected and silent: the video re-attaches, generation never restarts, and the run finishes in
+local world mode with the world reachable the whole time.
+
+Measured with the link dropped under a live run (`tools/drop-probe.mjs`): `disconnected` 3 s later
+with the video element unmounted and the run still playing, `ready` at 31 s, the re-arm reaching
+`start()` at 41 s — `arm :: run=true recovered=true` then `started :: run=true recovered=true` in
+`window.__orbisTrace` — and frames moving again at 45 s. Before the change no `arm` entry could exist
+at all: the pass returned before it traced anything.
+
+That slot is also the app's one dependency on a *server* setting, so the two have to agree. A
+session is leased for at most `MAX_SESSION_DURATION_SECONDS` (`server/reactor-token.ts`, 20
+minutes), and a leak is the one way a session outlives the tab that created it: the lease expires
+on its own, but a release that fails — an orphaned session is exactly what `session termination
+failed: http transport error: jwt resolver rejected: fetch failed` leaves behind — holds the slot
+for that whole lease. Both retry loops (`BUSY_*` and `RECONNECT_*` in `WorldLayer.tsx`) therefore
+poll quickly for the two minutes an ordinary release takes and then at a minute apiece for
+`SLOW_RETRY_ATTEMPTS`, which outlasts any lease. Shortening either budget below the lease is how a
+single dropped connection turned into a world that never came back until the page was reloaded.
+
+The release itself is retried too (`releaseSession`). A `disconnect()` that fails is worth re-asking
+rather than abandoning, because of what the SDK does with it: `Reactor.disconnect()` only frees the
+wasm client *after* the release has succeeded, so the failed attempt leaves the one thing that still
+knows which session to end alive, and the next attempt — with a working JWT — finishes what it
+started. Until it lands, the session is a recorded debt (`releaseOwed`), carried into every later
+connect so the slot is paid off *before* a new session is asked for instead of after the 429 that
+asking for it would earn.
+
+A 502 from `/api/reactor/token` is worth reading precisely, because it is not the Reactor API
+rejecting anything: both token routes answer 502 only when their *own* outbound `fetch` to
+`api.reactor.inc` throws, and the body carries Node's message for that (`{"error":"fetch failed"}`)
+rather than an HTTP status from Reactor. It means the dev machine could not reach the API at that
+moment, and the SDK reports the same moment as `jwt resolver rejected: fetch failed` — which is also
+why the surrounding 429s are a *consequence*: the JWT that failed is the one termination needed.
 
 ## The generated world is the far layer
 
@@ -418,6 +510,86 @@ third — which is haze now, and which straddled the skyline step half the time:
 between 0.69 and its 2.0 clamp in one run until the band was anchored to the horizon and the reading
 median-filtered. After: 0.71 → 0.82 across a run, tracking the world's tone.
 
+## The roadside
+
+The generated world is the far layer and the ribbon is the near one, and nothing used to be in
+between: pace was judged from the ribbon alone, which reads as a treadmill in front of a painted
+backdrop. `src/game/roadside.ts` fills the gap with content the run moves past — adobe blocks,
+standing pillars and mesas in the desert; near blocks under a far skyline in the city; trunks with a
+canopy stacked on them, and trail markers, in the forest.
+
+Two unit meshes, instanced: a cube for the blocks and a plane for the panels, so the whole roadside is
+two draw calls whatever a world puts beside the road. The layout is fixed data — each piece at a fixed
+offset in a 75 m cycle of Z — and the scene wraps that cycle by the distance travelled each frame, so
+a piece leaving the far end has already reappeared behind the runner. Nothing spawns, nothing is
+culled, no React state changes per frame; the only per-frame work is one matrix per piece.
+
+Two details are what keep it from looking wrong at speed:
+
+- **Taper, not pop.** Pieces shrink into their own footprint over the last 12 m (`roadsideTaper`). At
+  75 m the apron's alpha is nearly gone and the world's haze is thin, so a recycle has nothing to hide
+  behind and the seam would otherwise be a visible event.
+- **Cleared from the inner edge, not the centre.** A piece is positioned from the row's *inner
+  clearance* outwards, so widening a block moves it further out rather than reaching across the
+  shoulder — the road's clearance is a property of the row, not a consequence of a random size. Bases
+  sit low enough to bury a piece's foot in the apron's bank, because sinking is invisible and floating
+  is the one error the eye catches immediately.
+
+### The panels are Orbis
+
+Orbis produces video and audio, not geometry. So the buildings are ours, but the picture on their
+camera-facing face is the live generated world: `src/orbis/world-frame.ts` samples the session's own
+`<video>` into a 320×180 canvas about once a second, and the panels are textured with it. The roadside
+wears the place the player is running through, and a change of world repaints it — the most direct
+answer available to "can Orbis make the scenery": not by generating the scenery, which it cannot do,
+but by generating what the scenery is wearing.
+
+Which piece carries a panel, and how much of it, is per world and per row (`poster`, `posterScale`):
+forest trail markers are mostly panel so the picture can be read, city near-blocks usually carry one,
+far rows never. Panels are unlit (`toneMapped: false`) so they read as signage in any world's light.
+When there is no world to show — the first seconds of a run, or any run in local world mode — they
+carry `createPosterArt`'s abstract panel for that world, because a lit panel with nothing on it is a
+black rectangle.
+
+Verified on headless runs in all three worlds, from `window.__roadside()`: 28 pieces and 5 panels in
+the desert, 26 and 8 in the city, 44 and 4 in the forest, with `travel` advancing at the road's own
+speed and `panelSource` flipping `fallback → live` a few seconds into a run (which is the sampler's
+canvas being uploaded, and confirms a stream-backed canvas is origin-clean and usable as a texture).
+
+That the pieces are *in the frame* is measured, not assumed. Per-frame luma change over a pair of run
+screenshots 0.8 s apart, per 5% row band, in a right-hand column and a centre column as the control:
+
+| row band | centre (0.40–0.60) | right (0.80–0.99) |
+| --- | --- | --- |
+| 5% | 0.2 | 5.1 |
+| 25% | 0.3 | 7.2 |
+| 35% | 1.4 | **25.9** |
+| 45% | 9.2 | 9.2 |
+
+Above the horizon the centre column is the generated video drifting slowly (0.1–1.4 luma/frame across
+the run); the right column is 2–26, because a block is passing it there. Below the horizon both columns
+are the apron scrolling at the road's speed, so the two layers agree. The desert, whose blocks are
+closest, reaches 24–42 across the side bands.
+
+The apron under all of it is drawn per world (`TERRAIN_DETAIL` in `RunnerScene.tsx`). One mottling
+serving as the material for all three read as exactly that — the same ground under a dune, a paving
+slab and a forest floor — so each world now has its own tile size, ink and mark counts, published per
+run as `--terrain-tile` / `--terrain-ink` on `:root` (14 / 4 in the desert, 11 / 4.2 in the city, 12 /
+4.2 in the forest). The scroll is unchanged by any of it: the offset advances by distance over the
+tile and the texture repeats every tile, so every world's pattern still travels exactly with the
+ground. A smaller tile means finer detail, not slower ground.
+
+That the ground moves in each of them is measured: frame-to-frame mean |Δluma| over the 31–62% rows —
+the band the apron is actually seen in, below the horizon and above the HUD — with the Orbis layer
+hidden so the capture is the game's own geometry over the local gradient. Over ~18 m of travel it
+reads **14.1** (desert), **20.0** (city) and **19.4** (forest), against a sky band that reads exactly
+**0.000** as the control. The spread between worlds is inside the noise of the measure, which is also
+why the values are not fitted to it: the same unchanged desert read 22.9 in one run and 14.1 in
+another, because the terrain grade adapts to the frames and the roadside puts different pieces under
+the camera each run. They are chosen from what each material is and what survives being looked at —
+see the constant's own note for why the city's tile is closer to the desert's than paving alone would
+suggest.
+
 ## What the app asks of Orbis
 
 `reactor/visko-orbis-stable` (`@reactor-models/visko-orbis-stable@^2.3.0`) declares ten model commands
@@ -427,7 +599,7 @@ needs. Read off the installed type declarations, not from memory:
 
 | Command | What it does here | Verified by |
 | --- | --- | --- |
-| `connect` / `disconnect` *(store)* | the one session; recycled after 25 min idle, released on `pagehide` | session reaches `ready`; the busy path observed live ("still releasing the previous world (2/15)") |
+| `connect` / `disconnect` *(store)* | the one session; released 60 s after a run ends, and on `pagehide` | session reaches `ready`; the busy path observed live ("still releasing the previous world (2/15)"), including the leaked-slot case where termination failed and the slot answered 429 until its lease ran out |
 | `setPrompt` | the world's wide shot, the run's dive, one prompt per event | `window.__orbisPrompts` — one `launch` per dive, nothing steering after Exit |
 | `setImage` | the player's landscape, as the starting frame | `image_accepted 1280x720`, `has_image:true`, and a run whose horizon the lock leaves alone |
 | `setSeed` | armed from a hash of the prepared frame, so a picture opens the same world twice | sent before `start`, never refused. The reproducibility it promises is the model's contract, not something this probe observes |
@@ -435,7 +607,7 @@ needs. Read off the installed type declarations, not from memory:
 | `setAudioEnabled` | sound on — `main_audio` carries the generated soundtrack | `audio_enabled:true` in the state, the element unmuted with a live `audio:live` track |
 | `setAudioPrompt` | one caption per world, bent per event | `audio_prompt` in the state is this world's caption; captions pair with visual prompts in the journal |
 | `start` | arms and starts generation; chained per world | chunks advance (`current_chunk` 0 → 14 across a run) |
-| `pause` / `resume` | the game's pause, a hidden tab, and the chunk rest that duty-cycles generation | `paused:true, running:false`, the frame delta above, and `generation_paused` / `generation_resumed` replies traced per cycle in `window.__orbisTrace` |
+| `pause` / `resume` | the game's pause, a hidden tab, and the chunk rest that duty-cycles generation | `paused:true, running:false`, `generation_paused` / `generation_resumed` replies traced per cycle in `window.__orbisTrace`, and the chunk counter frozen across a held pause: **0 chunks over 22 s** of a paused run, then 4 over the 12 s after resuming — the pixels are the weaker evidence, since a live stream plays out the chunk it was already handed and reads as a moving picture for a second or two after the model has stopped |
 | `reset` | clears the conditions so a new landscape can be pinned | `started:false, chunk:0, has_image:false` → re-armed |
 
 | Message | What it does here |
@@ -473,9 +645,13 @@ Measured on the desert, at the spot in front of the runner:
 
 ## Diagnostics
 
-`tools/orbis-probe.mjs` drives headless Chrome through a real run — menu world preview first, then
-a run — and prints the chip, the video element state, the layout of the world layer, Reactor
-network responses, console output, and the grade:
+`tools/orbis-probe.mjs` drives headless Chrome through a real run — the menu first, then the run-entry
+load, then the run — and prints the chip, the video element state, the layout of the world layer,
+Reactor network responses, console output, and the grade. It asserts the two claims of this build on
+the way: that the menu is *local* (no session started, no video element, the world layer at opacity 0)
+and that the loader reached an armed world rather than giving up into local world mode. It follows the
+loader by its own stages, and measures the dive from where it now begins — the first frame after the
+loading surface leaves — so a cold run is reported as a slow load rather than a run that never ran:
 
 ```bash
 node tools/orbis-probe.mjs http://localhost:5173/ 45 "$TEMP/watchme-run.png"
@@ -505,10 +681,26 @@ the question a dropped line would answer wrong.
 
 `LANDSCAPE=1 node tools/orbis-probe.mjs … 20` builds a picture in the page with its horizon
 deliberately low (`LANDSCAPE_HORIZON=0.72` by default), hands it to the real upload control, then
-measures the prepared frame with its own row scan and waits for the Start button to come back. It also
+measures the prepared frame with its own row scan and reports that the choice is *staged*: the pin
+itself happens at run entry, which the loader's second stage is the record of. It also
 reports the world's sound state and, between two samples of the raw `<video>` 2.5 s apart, whether the
 world actually stops when the run is paused — the media clock is not evidence either way, since a live
 track keeps its element's clock advancing whether or not frames arrive.
+
+`tools/drop-probe.mjs` drives a run and then takes the link away from under it, to check the one
+failure that cannot be produced any other way: the network can be withheld from the token route and
+from every other request, but not from an established WebRTC media path —
+`Network.emulateNetworkConditions({offline:true})` was measured under a live run and the status sat at
+`ready`/`streaming` for the whole twenty seconds while the world kept producing frames and the chunk
+counter climbed from 1 to 7. The transition is therefore forced through `window.__orbisDrop`, which
+the world layer publishes in development: the SDK told to drop while a run is on screen, which is what
+the status goes through when the transport really dies. The probe then prints the status transitions,
+the arming pass's trace entries, and the mean luma change of the world's pixels before and after — the
+only honest evidence that frames are being produced again rather than that a media element exists.
+
+```bash
+node tools/drop-probe.mjs http://[::1]:5199/
+```
 
 `tools/frame-report.mjs` has a mode per question: `--cliff shot.png` prints the row-brightness profile
 and the sharpest darkening step (the skyline rule, run on a capture so it reads where the horizon

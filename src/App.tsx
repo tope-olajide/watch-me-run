@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import MenuExperience from "./MenuExperience";
+import WorldLoader from "./WorldLoader";
 import type { CharacterId } from "./game/character-catalog";
 import { characterCatalog } from "./game/character-catalog";
 import type { Environment } from "./game/run-state";
@@ -11,10 +12,10 @@ const RunExperience = lazy(() => import("./RunExperience"));
 const WorldLayer = lazy(() => import("./orbis/WorldLayer"));
 
 /**
- * Starting a run is a dive into the world that is already generating behind the menu, not a screen
- * swap: the interface leaves, the live frames push in, and the runner arrives inside the chunks
- * that were already on their way. The CSS animations that draw this are keyed off
- * `html[data-entering]` and share this duration.
+ * The dive: the interface leaves, the live frames push in, and the runner arrives inside the chunks
+ * that were already on their way. By the time it plays the world is armed, because `WorldLoader` has
+ * asked for it and waited — so this is the part of starting a run that is a *transition* rather than a
+ * wait. The CSS animations that draw it are keyed off `html[data-entering]` and share this duration.
  */
 const ENTER_MS = 1450;
 /** Reduced motion gets the arrival, not the ride. */
@@ -28,6 +29,15 @@ const EXIT_MS_REDUCED = 160;
 
 type Phase =
   | { kind: "menu"; returning?: boolean }
+  /**
+   * Between the menu and the dive: the world is being asked for and Orbis is being waited for.
+   *
+   * The menu asks for nothing (see `src/MenuExperience`), so this is where a session is created, a
+   * landscape is pinned and generation is started — with `src/WorldLoader` on screen naming each step.
+   * `at` is the Start press in `performance.now()`, so the loading screen can be held for a moment
+   * even when the world is already warm without ever being held for longer than the player waited.
+   */
+  | { kind: "loading"; environment: Environment; characterId: CharacterId; at: number }
   | { kind: "entering"; environment: Environment; characterId: CharacterId }
   | { kind: "run"; environment: Environment; characterId: CharacterId }
   | { kind: "exiting"; environment: Environment; characterId: CharacterId };
@@ -38,13 +48,40 @@ function prefersReducedMotion(): boolean {
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ kind: "menu" });
+  const loading = phase.kind === "loading" ? phase : undefined;
   const entering = phase.kind === "entering" ? phase : undefined;
   const exiting = phase.kind === "exiting" ? phase : undefined;
   const running = phase.kind === "run" || phase.kind === "exiting" ? phase : undefined;
 
   const beginRun = useCallback((environment: Environment, characterId: CharacterId) => {
-    setPhase((current) => (current.kind === "menu" ? { kind: "entering", environment, characterId } : current));
+    setPhase((current) =>
+      current.kind === "menu"
+        ? { kind: "loading", environment, characterId, at: performance.now() }
+        : current,
+    );
   }, []);
+
+  /**
+   * The loading screen's verdict: the world is armed, or waiting any longer is worse than playing.
+   *
+   * Its own verdict rather than a condition here because it is the only surface that can see what
+   * Orbis is doing — connecting, generating, pinning a landscape — and the difference between "worth
+   * another second" and "never coming" is exactly what it is watching.
+   */
+  const worldReady = useCallback(() => {
+    setPhase((current) =>
+      current.kind === "loading"
+        ? { kind: "entering", environment: current.environment, characterId: current.characterId }
+        : current,
+    );
+  }, []);
+
+  // Which surface owns the screen, published for the stylesheet. The world layer stays dark while the
+  // menu is up: the menu is local now, and a world left warm behind it (see the grace window in
+  // `WorldLayer`) would otherwise be visible through the menu's own scrim.
+  useEffect(() => {
+    document.documentElement.dataset.surface = phase.kind;
+  }, [phase.kind]);
 
   const beginExit = useCallback(() => {
     // Synchronously, before any state: the run's prompt channel is closed at the click, so nothing
@@ -133,6 +170,20 @@ export default function App() {
       <Suspense fallback={null}>
         <WorldLayer />
       </Suspense>
+
+      {/*
+        The wait for the world, on top of the menu it was started from: the menu behind is already
+        the local backdrop, and leaving it in place means the loading screen dissolves into the same
+        interface the player was reading rather than into a blank frame.
+      */}
+      {loading && (
+        <WorldLoader
+          environment={loading.environment}
+          characterId={loading.characterId}
+          startedAt={loading.at}
+          onReady={worldReady}
+        />
+      )}
 
       {running ? (
         <Suspense fallback={<div className="app-loading">Preparing your world...</div>}>
