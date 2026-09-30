@@ -278,12 +278,44 @@ and 512 (normal, specular), a vertex per face corner is welded down to one per v
 (73,692 → 13,835 for Amy), and the FBX's `MeshPhongMaterial` becomes a physical one that keeps its
 gloss rather than approximating it: shininess 20 becomes roughness 0.30, and the specular colour and
 map ride through as `KHR_materials_specular` instead of being inverted into a roughness map. That is
-122 MB of source down to 6.9 MB of runtime assets, and `dist/` down to 9.0 MB. Re-run the tool after
+122 MB of source down to 6.9 MB of runtime assets, and `dist/` down to 9.0 MB — 12 MB with the
+roadside's cooked props aboard too. Re-run the tool after
 changing anything in `models/` — a fresh clone cannot, since it has the GLBs and not the sources. And
 to look at the two side by side rather than take that on trust, `tools/fidelity-check.html` renders
 the FBX and the GLB in the game's own light and measures the difference: mean 0.8–1.4 of 255, at most
 3.4% of pixels differing by more than 8, and neighbour-pixel detail within a few percent either way —
 the residue being the texture downscale, not the material.
+
+### The roadside props are bought, and cooked the same way
+
+The scenery that defines each world comes from asset packs rather than from geometry the game draws
+itself. They live in `models/` with their own `license.txt`, and all three are **CC-BY-4.0**, which
+means the author has to be credited wherever the work is shown — in this file, and in the game's own
+menu:
+
+| pack | what the roadside takes from it | author | source |
+| --- | --- | --- | --- |
+| Low poly trees, flowers and grass | the five `tree-stylized-*` trees — the whole forest | Márcio Meireles | [Sketchfab](https://sketchfab.com/3d-models/low-poly-trees-flowers-and-grass-442904f26b87407d98871b50b49c4169) |
+| Desert \| Rock \| (FIXED) Pack | all fifteen boulders — the desert's stones and outcrops, and the forest's | Erroratten | [Sketchfab](https://sketchfab.com/3d-models/desert-rock-fixed-pack-00c4468f1bca48509d7d2bd66b564cbc) |
+| LOWPOLY CITY STREET PACK BUILDINGS STYLIZED | thirteen buildings — the houses and shopfronts at the kerb, the tall narrow blocks in the skyline, a bin and a bench | haykel-shaba | [Sketchfab](https://sketchfab.com/3d-models/lowpoly-city-street-pack-buildings-stylized-8e1ba8a437c4460eaaa643953eaf79d0) |
+
+The packs are *scenes*, not props: 107 MB of glTF with 2048² textures beside them, where a tree is a
+trunk mesh and a canopy mesh somewhere down a hierarchy and a city is a street diorama. What the
+roadside needs out of them is a handful of objects, so `tools/cook-props.mjs` (driving
+`tools/cook-props.html`, because texture decoding needs a browser) cooks them down: it picks the
+objects a world asks for, bakes each one's parts into its own space so a prop is one object rather
+than a node tree, normalises it to a metre tall with its base at zero — the convention
+`roadside-props` authors its own shapes to, so a model and a hand-built prop are interchangeable to
+the layout — and cuts every texture to 256². Five trees come out at 982 KB, fifteen boulders at
+1.28 MB and thirteen city buildings at 664 KB: 2.9 MB of props out of 107 MB of sources.
+
+Two of the packs' extensions had to be handled by hand: `rocks` is
+`KHR_materials_pbrSpecularGlossiness`, which three dropped (its diffuse maps would have gone missing
+without being wired up explicitly), and `city` is `KHR_materials_unlit`, which would come back as flat
+unlit pictures pasted over a graded world. The cooker therefore builds every material from the glTF
+JSON rather than from what the loader hands back. The source scenes stay out of git — `.gitignore`
+carries them and the `license.txt` files deliberately do not — and re-running the cooker rebuilds the
+props from whatever is in `models/`.
 
 ## Controls
 
@@ -514,62 +546,109 @@ median-filtered. After: 0.71 → 0.82 across a run, tracking the world's tone.
 
 The generated world is the far layer and the ribbon is the near one, and nothing used to be in
 between: pace was judged from the ribbon alone, which reads as a treadmill in front of a painted
-backdrop. `src/game/roadside.ts` fills the gap with content the run moves past — adobe blocks,
-standing pillars and mesas in the desert; near blocks under a far skyline in the city; trunks with a
-canopy stacked on them, and trail markers, in the forest.
+backdrop. The roadside fills the gap with content the run moves past, per world:
 
-Two unit meshes, instanced: a cube for the blocks and a plane for the panels, so the whole roadside is
-two draw calls whatever a world puts beside the road. The layout is fixed data — each piece at a fixed
-offset in a 75 m cycle of Z — and the scene wraps that cycle by the distance travelled each frame, so
-a piece leaving the far end has already reappeared behind the runner. Nothing spawns, nothing is
-culled, no React state changes per frame; the only per-frame work is one matrix per piece.
+| world | what stands beside the road | pieces a cycle | panels |
+| --- | --- | --- | --- |
+| desert | five kinds of bought boulder in clusters, more of them bigger further out, five rock outcrops as the landform, saguaros, low adobe houses, signs | 77 in 14 kinds | 7 |
+| city | the pack's shopfronts and houses at the kerb, its bins and bench as clutter, the tall narrow blocks in the skyline, street lights reaching over the shoulder, a billboard on legs, a sign on a roof | 62 in 13 kinds | 9 |
+| forest | the pack's five trees in two stands, five kinds of stone between them, fallen logs and stumps at the shoulder, trail markers | 88 in 13 kinds | 6 |
 
-Two details are what keep it from looking wrong at speed:
+Those pieces are not boxes either. The first roadside was one unit cube scaled per piece — cheap, and
+it read as a fence of crates, because at 30 m/s there is no time to resolve a silhouette out of a box.
+Now a world's *scenery* is artist-made models out of the packs in `models/` (see the assets section),
+and the *furniture* — the signs, the billboards, the street lights, the logs, and the blocks a world
+falls back to when its pack is missing — is authored out of three's primitives in
+`src/game/roadside-props.ts`, its parts merged into one geometry with a colour baked per part (a
+street light's pole and head are one mesh, not two).
+Either way a kind is one `InstancedMesh`, so a world's roadside is a dozen-odd draw calls and 8–15k
+triangles instead of two — still no per-piece objects, no materials per prop, and nothing that reacts
+to where the runner is.
+
+The two halves meet in one map. A prop, bought or hand-built, answers the same two questions — how much
+ground does it take up, and how tall is it — and the layout works from that (`PropMetrics`), which is
+what lets a row be built from a model when one is available and from the shape it was drawn with when
+it is not. Every model is normalised to one metre tall with its base at zero by the cooker, so a row's
+scale range in metres means the same thing for both, and a row names its variants in order of
+preference (see `planRoadside`). That is also what a world does when a pack fails to fetch: the forest
+falls back to its authored conifers and boulders and still runs, rather than starting with nothing
+beside the road.
+
+The layout is fixed data — each piece at a fixed offset in a 75 m cycle of Z, seeded per world so a
+world is the same place every visit — and the scene wraps that cycle by the distance travelled each
+frame, so a piece leaving the far end has already reappeared behind the runner. Nothing spawns, nothing
+is culled, no React state changes per frame; the only per-frame work is one matrix per piece.
+
+Three details are what keep it from looking wrong at speed:
 
 - **Taper, not pop.** Pieces shrink into their own footprint over the last 12 m (`roadsideTaper`). At
   75 m the apron's alpha is nearly gone and the world's haze is thin, so a recycle has nothing to hide
   behind and the seam would otherwise be a visible event.
-- **Cleared from the inner edge, not the centre.** A piece is positioned from the row's *inner
-  clearance* outwards, so widening a block moves it further out rather than reaching across the
-  shoulder — the road's clearance is a property of the row, not a consequence of a random size. Bases
-  sit low enough to bury a piece's foot in the apron's bank, because sinking is invisible and floating
-  is the one error the eye catches immediately.
+- **Cleared from the inner edge, not the centre, and measured rather than declared.** A piece is
+  positioned from its row's *inner clearance* outwards, so a bigger one moves further out rather than
+  reaching across the shoulder, and the clearance is worked out from the geometry's own bounding box
+  (`PropMetrics`) — moving an arm on the cactus moves the clearance with it, and a bought boulder brings
+  its own. Measured over a whole
+  plan: the nearest piece edge stands 6.25 m from the road centre against a road edge at 5.25 m. The
+  city's street light is the nearest thing in any world, and its arm is what reaches in — the head
+  hangs about a metre off the kerb at 4.7 m up.
+- **On the ground, and a little into it.** Pieces used to sit on one flat base height, which was wrong
+  wherever the apron's banks are not flat: the banks climb to 1.75 m, so near-shoulder pieces floated
+  about half a metre and outer ones were buried. The apron's height field now lives in its own module
+  (`src/game/apron.ts`) and has two callers — the terrain mesh and the props standing on it — so
+  nothing can hover over the surface it is standing on. Each piece is then set into that ground by 8%
+  of its own height (`roadsideSink`), which is what stops a boulder reading as balanced on a point and
+  what absorbs the apron being a 2.5 m-per-quad mesh over a rolling field.
 
 ### The panels are Orbis
 
-Orbis produces video and audio, not geometry. So the buildings are ours, but the picture on their
-camera-facing face is the live generated world: `src/orbis/world-frame.ts` samples the session's own
+Orbis produces video and audio, not geometry. So the shapes are the game's — authored or bought — but
+the picture on their camera-facing face is the live generated world: `src/orbis/world-frame.ts` samples the session's own
 `<video>` into a 320×180 canvas about once a second, and the panels are textured with it. The roadside
 wears the place the player is running through, and a change of world repaints it — the most direct
 answer available to "can Orbis make the scenery": not by generating the scenery, which it cannot do,
 but by generating what the scenery is wearing.
 
-Which piece carries a panel, and how much of it, is per world and per row (`poster`, `posterScale`):
-forest trail markers are mostly panel so the picture can be read, city near-blocks usually carry one,
-far rows never. Panels are unlit (`toneMapped: false`) so they read as signage in any world's light.
-When there is no world to show — the first seconds of a run, or any run in local world mode — they
-carry `createPosterArt`'s abstract panel for that world, because a lit panel with nothing on it is a
-black rectangle.
+Only the kinds that can plausibly wear one do, and where it goes on each is one anchor apiece
+(`panelAnchor`): a board on two posts in the desert, posts through a board in the forest, a billboard
+frame on legs and a frame on a rooftop in the city, and a small lit sign on the wing of the adobe
+house. Every panel is 16:9, because the picture is a frame of the generated world and another aspect
+would letterbox or stretch it, and every panel faces straight down the road — a panel on a piece with
+a random yaw would face away from the runner, and the picture is the point of it. Panels are unlit
+(`toneMapped: false`) so they read as signage in any world's light. When there is no world to show —
+the first seconds of a run, or any run in local world mode — they carry `createPosterArt`'s abstract
+panel for that world, because a lit panel with nothing on it is a black rectangle.
 
-Verified on headless runs in all three worlds, from `window.__roadside()`: 28 pieces and 5 panels in
-the desert, 26 and 8 in the city, 44 and 4 in the forest, with `travel` advancing at the road's own
-speed and `panelSource` flipping `fallback → live` a few seconds into a run (which is the sampler's
-canvas being uploaded, and confirms a stream-backed canvas is origin-clean and usable as a texture).
+Verified on headless runs in all three worlds, from `window.__roadside()`: 77 pieces in 14 kinds and 7
+panels in the desert, 62 in 13 kinds and 9 panels in the city, 88 in 13 kinds and 6 panels in the
+forest — identical to the plans the layout module produces on its own in node, which is what "the plan
+is seeded per world" means in practice. `models` reports how many cooked props the world has to draw
+from (15 for the desert, 20 for the forest, 13 for the city), `travel` advances at the road's own
+speed, `panelSource` reads `live` in every one of them a few seconds into a run (the sampler's canvas
+being uploaded, which also confirms a stream-backed canvas is origin-clean and usable as a texture),
+and `shoulder` reports the apron's height under the near row, which the props are placed on.
 
-That the pieces are *in the frame* is measured, not assumed. Per-frame luma change over a pair of run
-screenshots 0.8 s apart, per 5% row band, in a right-hand column and a centre column as the control:
+That the pieces are *in the frame* is measured, not assumed — and in a world where the scenery and the
+ground behind it are both nearly black, a count of instances says nothing about whether any of them is
+being drawn. So there is a switch for it: `window.__roadsideVisible(false)` hides the whole group,
+and two captures either side of it difference out to exactly how much of the picture the roadside is.
+Taken as with → without → with, about 200 ms apart, so that a contribution can be told apart from the
+generated world drifting between captures:
 
-| row band | centre (0.40–0.60) | right (0.80–0.99) |
-| --- | --- | --- |
-| 5% | 0.2 | 5.1 |
-| 25% | 0.3 | 7.2 |
-| 35% | 1.4 | **25.9** |
-| 45% | 9.2 | 9.2 |
+| world | with | without | with | contribution |
+| --- | --- | --- | --- | --- |
+| city | 24.5 | 25.4 | 24.6 | **−0.9 luma**, whole frame |
+| forest | 60.4 | 66.7 | 61.4 | **−5.8 luma** |
+| desert | 79.0 | 79.6 | 79.0 | **−0.6 luma** |
 
-Above the horizon the centre column is the generated video drifting slowly (0.1–1.4 luma/frame across
-the run); the right column is 2–26, because a block is passing it there. Below the horizon both columns
-are the apron scrolling at the road's speed, so the two layers agree. The desert, whose blocks are
-closest, reaches 24–42 across the side bands.
+The contribution is the later "with" against the "without": in every world the roadside covers more of
+the frame with darker tone than the ground behind it. It is a little in the desert (−0.6: boulders are
+sandstone on sand, reading by shape and the shadow under them rather than by tone), the most in the
+forest (−5.8: a stand of dark canopies and stones the length of the shoulder in front of a pale world,
+and −4.9 when the capture was run again), and least in the city (−0.9: the pack's textured buildings
+sit in the world's tone, where the authored near-black blocks they replaced read −14). The two "with"
+frames agreeing to within a luma or two is what rules out drift — a flat with/without pair cannot,
+because the video layer keeps changing between them.
 
 The apron under all of it is drawn per world (`TERRAIN_DETAIL` in `RunnerScene.tsx`). One mottling
 serving as the material for all three read as exactly that — the same ground under a dune, a paving
@@ -686,6 +765,23 @@ itself happens at run entry, which the loader's second stage is the record of. I
 reports the world's sound state and, between two samples of the raw `<video>` 2.5 s apart, whether the
 world actually stops when the run is paused — the media clock is not evidence either way, since a live
 track keeps its element's clock advancing whether or not frames arrive.
+
+`tools/roadside-probe.mjs` drives one run per world and asks the two questions the roadside can be
+asked. What is beside the road comes from `window.__roadside()`: pieces per kind, panels, how far the
+scroll has reached, the height of the apron under the near row, and whether the panels are wearing the
+live world or the fallback art. Whether any of it is *in the picture* cannot come from that, so the
+probe hides the whole group with `window.__roadsideVisible(false)` — the world layer's sibling of
+`window.__orbisDrop`, published in development — and captures the same instant of the run with,
+without, and with it again. The three captures are what make the difference readable: the generated
+world is a live video layer that keeps changing, so a flat with/without pair cannot separate a
+roadside contribution from the world drifting, whereas a contribution shows up whichever way time runs
+between the three. It writes the frames and prints the `frame-report.mjs` lines that turn them into
+numbers, and it checks the one failure the readouts cannot see — a shader or program error in the
+console, which is what a broken instanced mesh looks like.
+
+```bash
+node tools/roadside-probe.mjs http://[::1]:5199/ "$TEMP"   # or WORLD=city for one of them
+```
 
 `tools/drop-probe.mjs` drives a run and then takes the link away from under it, to check the one
 failure that cannot be produced any other way: the network can be withheld from the token route and

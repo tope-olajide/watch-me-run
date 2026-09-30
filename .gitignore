@@ -149,4 +149,10 @@ vite.config.ts.timestamp-*
 # The runner rigs and their animation clips are 122 MB of FBX. Only the 6.9 MB of GLBs they convert
 # to is kept in git; `tools/fbx-to-glb.mjs` rebuilds those from the sources on disk.
 models/**/*.fbx
+# The roadside packs are 107 MB of glTF scenes and 2048² textures. Only the 2.9 MB of props cooked out
+# of them is kept, and `tools/cook-props.mjs` rebuilds those. Their `license.txt` files are *not*
+# ignored: all three packs are CC-BY, so the attribution travels with the models in git.
+models/*/scene.gltf
+models/*/scene.bin
+models/*/textures/
 reference/

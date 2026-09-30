@@ -261,6 +261,35 @@ export default function MenuExperience({ onStart, entering = false, returning = 
           </button>
           <p className="menu-controls">← → lanes · ↑ jump · ↓ slide · space pause</p>
           {worldState.error && <p className="menu-note">World link: {worldState.error}</p>}
+          {/* The scenery packs are CC-BY-4.0, which asks for the author to be credited where the work
+              is shown. This is that credit, in the one screen every run starts from. */}
+          <p className="menu-credits">
+            Scenery packs (CC-BY-4.0):{" "}
+            <a
+              href="https://sketchfab.com/3d-models/low-poly-trees-flowers-and-grass-442904f26b87407d98871b50b49c4169"
+              target="_blank"
+              rel="noreferrer"
+            >
+              trees
+            </a>{" "}
+            by Márcio Meireles,{" "}
+            <a
+              href="https://sketchfab.com/3d-models/desert-rock-fixed-pack-00c4468f1bca48509d7d2bd66b564cbc"
+              target="_blank"
+              rel="noreferrer"
+            >
+              rocks
+            </a>{" "}
+            by Erroratten,{" "}
+            <a
+              href="https://sketchfab.com/3d-models/lowpoly-city-street-pack-buildings-stylized-8e1ba8a437c4460eaaa643953eaf79d0"
+              target="_blank"
+              rel="noreferrer"
+            >
+              city
+            </a>{" "}
+            by haykel-shaba.
+          </p>
         </div>
       </section>
     </main>

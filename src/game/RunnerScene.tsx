@@ -22,7 +22,17 @@ import {
 } from "./pattern-field";
 import { roadGrade } from "./road-grade";
 import { environmentLook } from "./world-look";
-import { createPosterArt, planRoadside, roadsideTaper, roadsideZ } from "./roadside";
+import { apronField, apronHeight, sampleApron, type ApronField, type ApronSample } from "./apron";
+import {
+  AUTHORED_METRICS,
+  buildRoadsideProps,
+  propMaterial,
+  type PropId,
+  type PropKind,
+  type PropMetrics,
+} from "./roadside-props";
+import { roadsideModels, type RoadsideModel } from "./roadside-models";
+import { createPosterArt, planRoadside, roadsideSink, roadsideTaper, roadsideZ } from "./roadside";
 import { worldFrameCanvas, worldFrameRevision } from "../orbis/world-frame";
 import { useWorldTone, type WorldTone } from "../orbis/world-palette";
 import { useWorldAlign } from "../orbis/world-align";
@@ -73,9 +83,18 @@ const TERRAIN_SEGMENTS_Z = 90;
 /** Depth over which the apron dissolves: solid under the runner, gone before the horizon band. */
 const TERRAIN_FADE_START = 0.26;
 const TERRAIN_FADE_END = 0.78;
-const TERRAIN_GROUND_Y = -0.12;
 const TERRAIN_ROAD_SHOULDER = ROAD_WIDTH / 2 + 0.25;
-const TERRAIN_BANK_WIDTH = 12;
+
+/**
+ * The ground for one world.
+ *
+ * Built from the road's own shoulder, in one place, because two callers need it: the apron mesh, and
+ * the props standing on it. Two calls still describe the same ground — the field is a value, and this
+ * is the only place the shoulder it is built from comes from.
+ */
+function worldApron(environment: Environment): ApronField {
+  return apronField(environment, TERRAIN_ROAD_SHOULDER);
+}
 /**
  * What the apron is made of, per world.
  *
@@ -168,7 +187,9 @@ function createTerrainGeometry(environment: Environment): THREE.BufferGeometry {
   const groundColor = new THREE.Color(look.base);
   const bankColor = new THREE.Color(look.grain);
   const color = new THREE.Color();
-  const phase = environment === "desert" ? 0.4 : environment === "city" ? 2.1 : 4.2;
+  // The same field the roadside stands on, so the two cannot end up describing different grounds.
+  const field = worldApron(environment);
+  const sample: ApronSample = { height: 0, lateral: 0, undulation: 0 };
 
   for (let row = 0; row <= TERRAIN_SEGMENTS_Z; row += 1) {
     const depth = row / TERRAIN_SEGMENTS_Z;
@@ -177,16 +198,7 @@ function createTerrainGeometry(environment: Environment): THREE.BufferGeometry {
     for (let column = 0; column <= TERRAIN_SEGMENTS_X; column += 1) {
       const across = column / TERRAIN_SEGMENTS_X;
       const x = (across - 0.5) * TERRAIN_WIDTH;
-      const lateral = THREE.MathUtils.smoothstep(
-        Math.abs(x),
-        TERRAIN_ROAD_SHOULDER,
-        TERRAIN_ROAD_SHOULDER + TERRAIN_BANK_WIDTH,
-      );
-      const undulation =
-        Math.sin(Math.abs(x) * 0.075 + z * 0.05 + phase) * 0.5 +
-        Math.cos(Math.abs(x) * 0.035 - z * 0.075 + phase * 1.7) * 0.35;
-      const bankHeight = Math.max(0.3, 0.9 + undulation);
-      const height = TERRAIN_GROUND_Y + lateral * bankHeight;
+      const { height, lateral, undulation } = sampleApron(field, x, z, sample);
       const vertex = row * rowSize + column;
       const positionIndex = vertex * 3;
       const uvIndex = vertex * 2;
@@ -633,13 +645,21 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
 }
 
 /**
- * The roadside: the blocks that line the run, and the lit panels on them.
+ * The roadside: the props that line the run, and the lit panels on them.
  *
- * One unit cube and one unit plane, instanced — so the whole roadside is two draw calls whatever a
- * world decides to put beside the road. The layout is fixed (see `planRoadside`); this component only
- * moves it. Each piece lives at a fixed offset in a repeating cycle of Z, and the cycle is wrapped by
- * the distance travelled, so a piece leaving the far end has already reappeared behind the runner:
- * nothing spawns, nothing is culled, and no React state changes per frame.
+ * One instanced mesh per prop kind, plus one for the panels — five to seven draw calls for a whole
+ * world's scenery, whatever it decides to put beside the road, because a kind that appears twice in
+ * a plan is still one geometry and one material. The layout is fixed (see `planRoadside`); this
+ * component only moves it. Each piece lives at a fixed offset in a repeating cycle of Z, and the
+ * cycle is wrapped by the distance travelled, so a piece leaving the far end has already reappeared
+ * behind the runner: nothing spawns, nothing is culled, and no React state changes per frame.
+ *
+ * Two things about a prop are decided here rather than in the plan, because they are properties of the
+ * ground rather than of the layout. One is where the ground *is*: every piece is put on the apron's
+ * own height field (`src/game/apron`) — the same one the terrain mesh is built from — so nothing
+ * hovers over the surface it is standing on, even where the banks climb to their full height. The
+ * other is depth: a piece is set a small fraction of its own height into the ground, which is what
+ * keeps a boulder or a kerb from reading as balanced on a point.
  *
  * The panels are the interesting half. Their picture is a frame of the live generated world, sampled
  * out of the SDK's own video by `src/orbis/world-frame`, so the roadside wears the place the player
@@ -648,8 +668,62 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
  * because a lit panel with nothing on it is a black rectangle.
  */
 function Roadside({ environment, speedRef }: { environment: Environment; speedRef: { current: number } }) {
-  const plan = useMemo(() => planRoadside(environment), [environment]);
+  const apron = useMemo(() => worldApron(environment), [environment]);
+  const propPaint = useMemo(() => propMaterial(environment), [environment]);
   const art = useMemo(() => createPosterArt(environment), [environment]);
+  // `null` until the world's packs have been read, which is what the plan waits for: a prop's size is
+  // measured off its geometry, and a plan cannot be laid out around a prop whose size is not known yet.
+  const [models, setModels] = useState<RoadsideModel[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModels(null);
+    roadsideModels(environment).then((loaded) => {
+      if (!cancelled) setModels(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [environment]);
+
+  /**
+   * Everything this world can stand beside the road: what it bought, and what the game draws itself.
+   *
+   * One map for both, because the layout asks one question of a prop — how much ground does it take
+   * up — and both answer it the same way. A world whose packs did not load simply has fewer entries,
+   * and its rows fall back to the shapes they were drawn with (see `planRoadside`).
+   */
+  const catalog = useMemo(() => {
+    const metrics = new Map<PropId, PropMetrics>(Object.entries(AUTHORED_METRICS));
+    for (const model of models ?? []) metrics.set(model.id, model.metrics);
+    return metrics;
+  }, [models]);
+
+  const plan = useMemo(() => planRoadside(environment, catalog), [environment, catalog]);
+
+  // Only the hand-built kinds this plan actually uses: nothing is built that no run will draw.
+  const authored = useMemo(
+    () =>
+      buildRoadsideProps(
+        environment,
+        [...plan.props.keys()].filter((id) => id in AUTHORED_METRICS) as PropKind[],
+      ),
+    [environment, plan],
+  );
+
+  /** What to draw for every prop in the plan: a hand-built kind is one part, a model may be several. */
+  const drawable = useMemo(() => {
+    const parts = new Map<PropId, { geometry: THREE.BufferGeometry; material: THREE.Material }[]>();
+    for (const id of plan.props.keys()) {
+      const built = authored.get(id);
+      if (built) parts.set(id, [{ geometry: built, material: propPaint }]);
+      else {
+        const model = (models ?? []).find((entry) => entry.id === id);
+        if (model) parts.set(id, model.parts);
+      }
+    }
+    return parts;
+  }, [plan, authored, models, propPaint]);
   const fallback = useMemo(() => {
     const texture = new THREE.CanvasTexture(art);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -672,24 +746,32 @@ function Roadside({ environment, speedRef }: { environment: Environment; speedRe
       }),
     [fallback],
   );
-  const massGeometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
   const panelGeometry = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
-  const massMaterial = useMemo(
-    () => new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0.02 }),
-    [],
-  );
-  const masses = useRef<THREE.InstancedMesh>(null);
+  const group = useRef<THREE.Group>(null);
+  // One prop can be several meshes — a tree is a trunk and a canopy — and they all carry the same
+  // instances, so a prop is a list of meshes here rather than one.
+  const meshes = useRef(new Map<PropId, THREE.InstancedMesh[]>());
   const panels = useRef<THREE.InstancedMesh>(null);
   const scratch = useRef(new THREE.Matrix4());
+  const sized = useRef(new THREE.Vector3());
   const tint = useRef(new THREE.Color());
   const travel = useRef(0);
   const live = useRef<THREE.CanvasTexture | undefined>(undefined);
   const liveRevision = useRef(-1);
+  const holdMesh = useCallback((id: PropId, part: number, mesh: THREE.InstancedMesh | null) => {
+    const parts = meshes.current.get(id) ?? [];
+    if (mesh) parts[part] = mesh;
+    else parts.length = part;
+    meshes.current.set(id, parts);
+  }, []);
 
-  useEffect(() => () => massGeometry.dispose(), [massGeometry]);
   useEffect(() => () => panelGeometry.dispose(), [panelGeometry]);
-  useEffect(() => () => massMaterial.dispose(), [massMaterial]);
+  useEffect(() => () => propPaint.dispose(), [propPaint]);
   useEffect(() => () => fallback.dispose(), [fallback]);
+  // Only the hand-built geometry is ours to free. The packs' geometry and materials are page-lifetime
+  // assets shared by every world that stands on them (see `roadside-models`), so disposing them with
+  // a world would leave the next world drawing freed buffers.
+  useEffect(() => () => authored.forEach((geometry) => geometry.dispose()), [authored]);
   useEffect(
     () => () => {
       live.current?.dispose();
@@ -700,16 +782,18 @@ function Roadside({ environment, speedRef }: { environment: Environment; speedRe
 
   // Per-piece colour, set once per layout: the matrices move every frame, the palette does not.
   useEffect(() => {
-    const mesh = masses.current;
-    if (!mesh) return;
-    plan.masses.forEach((mass, index) => mesh.setColorAt(index, tint.current.set(mass.color)));
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [plan]);
+    for (const [id, instances] of plan.props) {
+      for (const mesh of meshes.current.get(id) ?? []) {
+        instances.forEach((prop, index) => mesh.setColorAt(index, tint.current.set(prop.color)));
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      }
+    }
+  }, [plan, drawable]);
 
   useEffect(() => {
     const mesh = panels.current;
     if (!mesh) return;
-    plan.posters.forEach((poster, index) => mesh.setColorAt(index, tint.current.set(poster.color)));
+    plan.panels.forEach((panel, index) => mesh.setColorAt(index, tint.current.set(panel.color)));
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }, [plan]);
 
@@ -718,44 +802,90 @@ function Roadside({ environment, speedRef }: { environment: Environment; speedRe
   // answer. Same reasoning as `window.__orbisWorld`.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
+    const all = [...plan.props.values()].flat();
     (window as unknown as { __roadside?: () => unknown }).__roadside = () => ({
-      pieces: plan.masses.length,
-      panels: plan.posters.length,
+      pieces: all.length,
+      kinds: plan.props.size,
+      byKind: Object.fromEntries([...plan.props].map(([id, instances]) => [id, instances.length])),
+      // Whether this run is standing on the bought packs or on the shapes they fall back to, and what
+      // the layout is drawn with either way.
+      models: models?.length ?? 0,
+      panels: plan.panels.length,
       travel: Math.round(travel.current * 10) / 10,
-      near: Math.max(...plan.masses.map((mass) => roadsideZ(mass.offset, travel.current))).toFixed(1),
-      far: Math.min(...plan.masses.map((mass) => roadsideZ(mass.offset, travel.current))).toFixed(1),
+      near: all.length
+        ? Math.max(...all.map((prop) => roadsideZ(prop.offset, travel.current))).toFixed(1)
+        : null,
+      far: all.length
+        ? Math.min(...all.map((prop) => roadsideZ(prop.offset, travel.current))).toFixed(1)
+        : null,
+      // Where the shoulder is standing, which is the one thing about the ground a screenshot of a
+      // prop cannot tell you: a piece can look planted and still be a metre off.
+      shoulder: apronHeight(apron, 8, 0).toFixed(2),
+      visible: group.current?.visible ?? null,
       panelSource: worldFrameRevision() > 0 ? "live" : "fallback",
     });
-  }, [plan]);
+  }, [plan, apron, models]);
+
+  // Development-only switch, for the question `window.__roadside` cannot answer: how much of the
+  // frame is the roadside? "The pieces exist" and "the pieces are in the picture" are different
+  // claims, and in a dark world — where scenery and the ground behind it are both nearly black — a
+  // count of instances says nothing about whether any of them are being drawn. Hiding the group and
+  // differencing two frames settles it, and it is the same reasoning as `window.__orbisDrop`.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __roadsideVisible?: (visible: boolean) => boolean }).__roadsideVisible = (
+      visible: boolean,
+    ) => {
+      if (!group.current) return false;
+      group.current.visible = visible;
+      return group.current.visible;
+    };
+    return () => {
+      delete (window as unknown as { __roadsideVisible?: unknown }).__roadsideVisible;
+    };
+  }, []);
 
   useFrame((_, delta) => {
     // The road's own distance, so the roadside and the ribbon are the same ground moving.
     travel.current += speedRef.current * delta;
     const matrix = scratch.current;
-    const massMesh = masses.current;
+
+    for (const [id, instances] of plan.props) {
+      const parts = meshes.current.get(id);
+      const metrics = catalog.get(id);
+      if (!parts || parts.length === 0 || !metrics) continue;
+
+      instances.forEach((prop, index) => {
+        const z = roadsideZ(prop.offset, travel.current);
+        const taper = Math.max(0.001, roadsideTaper(z));
+        const scale = prop.scale * taper;
+        // On the ground the apron actually has here, then set into it by a fraction of the piece's
+        // own height, so nothing hovers over the facet it is standing on.
+        const ground = apronHeight(apron, prop.x, z) - roadsideSink(metrics.height * scale);
+        matrix.makeRotationY(prop.yaw);
+        matrix.scale(sized.current.set(scale, scale, scale));
+        matrix.setPosition(prop.x, ground, z);
+        // Every part of a prop is the same prop, so they all get the same matrix: a tree's canopy
+        // cannot drift from its trunk.
+        for (const mesh of parts) mesh.setMatrixAt(index, matrix);
+      });
+      for (const mesh of parts) mesh.instanceMatrix.needsUpdate = true;
+    }
+
     const panelMesh = panels.current;
-    if (!massMesh || !panelMesh) return;
-
-    plan.masses.forEach((mass, index) => {
-      const z = roadsideZ(mass.offset, travel.current);
-      const size = Math.max(0.001, roadsideTaper(z));
-      const height = mass.height * size;
-      matrix.makeScale(mass.width, height, mass.depth);
-      matrix.setPosition(mass.x, mass.baseY + height / 2, z);
-      massMesh.setMatrixAt(index, matrix);
-    });
-    massMesh.instanceMatrix.needsUpdate = true;
-
-    plan.posters.forEach((poster, index) => {
-      const z = roadsideZ(poster.offset, travel.current);
-      const size = Math.max(0.001, roadsideTaper(z));
-      matrix.makeScale(poster.width * size, poster.height * size, 1);
-      // Lifted from the piece's base rather than from the panel's own centre, so it stays where it was
-      // put on the face as that piece shrinks into the far taper.
-      matrix.setPosition(poster.x, poster.baseY + (poster.y - poster.baseY) * size, z);
-      panelMesh.setMatrixAt(index, matrix);
-    });
-    panelMesh.instanceMatrix.needsUpdate = true;
+    if (panelMesh) {
+      plan.panels.forEach((panel, index) => {
+        const z = roadsideZ(panel.offset, travel.current);
+        const taper = Math.max(0.001, roadsideTaper(z));
+        const ground = apronHeight(apron, panel.x, z) - panel.sink * taper;
+        matrix.makeScale(panel.width * taper, panel.height * taper, 1);
+        // Lifted from the piece's base rather than from the panel's own centre, so it stays where it
+        // was put on the face as that piece shrinks into the far taper.
+        matrix.setPosition(panel.x, ground + panel.y * taper, z + panel.z * taper);
+        panelMesh.setMatrixAt(index, matrix);
+      });
+      panelMesh.instanceMatrix.needsUpdate = true;
+    }
 
     // The world's own picture, when there is one. Sampled elsewhere: the element it comes from
     // belongs to the SDK's surface, and this runs inside the render loop.
@@ -778,18 +908,22 @@ function Roadside({ environment, speedRef }: { environment: Environment; speedRe
   });
 
   return (
-    <group>
-      <instancedMesh
-        key={`roadside-masses-${environment}`}
-        ref={masses}
-        args={[massGeometry, massMaterial, plan.masses.length]}
-        frustumCulled={false}
-      />
-      {plan.posters.length > 0 && (
+    <group ref={group}>
+      {[...plan.props].map(([id, instances]) =>
+        (drawable.get(id) ?? []).map((part, index) => (
+          <instancedMesh
+            key={`roadside-${id}-${index}-${environment}`}
+            ref={(mesh) => holdMesh(id, index, mesh)}
+            args={[part.geometry, part.material, instances.length]}
+            frustumCulled={false}
+          />
+        )),
+      )}
+      {plan.panels.length > 0 && (
         <instancedMesh
           key={`roadside-panels-${environment}`}
           ref={panels}
-          args={[panelGeometry, panelMaterial, plan.posters.length]}
+          args={[panelGeometry, panelMaterial, plan.panels.length]}
           frustumCulled={false}
         />
       )}

@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>roadside props cooker</title>
+  </head>
+  <body>
+    <p>Build step for the roadside props — see <code>tools/cook-props.mjs</code>.</p>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+      import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+
+      /**
+       * Turns a downloaded asset pack into the handful of props the roadside uses.
+       *
+       * The packs in `models/` are whole scenes bought as scenes: `models/trees` is twenty-four meshes
+       * of trees and flowers with thirty-two megabytes of 2048² textures, `models/rocks` is fifteen
+       * boulders with fifty megabytes beside them, and `models/city` is a street diorama. None of that
+       * can ship, and none of it is shaped like a prop — a tree is a trunk mesh and a canopy mesh in a
+       * scene hierarchy, sitting at whatever place in the pack the artist put it.
+       *
+       * So this page does the four things that have to happen in a browser (texture decoding needs
+       * one):
+       *
+       * 1. **Picks** the objects a world will use, by name and size, out of the pack's scene.
+       * 2. **Bakes** each one into its own space: the world transforms of its parts are applied to
+       *    their vertices, so a prop is one object rather than a node tree, and the parts keep their
+       *    positions relative to each other.
+       * 3. **Normalises** it: centred across X and Z, base at y = 0, exactly 1 m tall. That is the
+       *    convention `roadside-props` authors its own shapes to, so a model and a hand-built prop are
+       *    interchangeable to the layout and the layout's scale ranges stay in metres.
+       * 4. **Shrinks** every texture: the maps are cut to a couple of hundred pixels square, which is
+       *    what a prop seen at 10–40 m at 30 m/s is worth. A tree's canopy keeps PNG, because its
+       *    silhouette is cut out of it.
+       *
+       * Materials are built here from the glTF JSON rather than taken from the loader, because the
+       * packs use extensions the loader will not all honour: `rocks` is `KHR_materials_pbrSpecularGlossiness`
+       * (which three dropped, so its diffuse map would silently go missing) and `city` is
+       * `KHR_materials_unlit` (which would come back unlit, and render as a flat picture pasted over a
+       * graded world). Both become the same lit standard material here.
+       *
+       * `tools/cook-props.mjs` drives this page and writes the files; it takes a minute per pack and
+       * only needs re-running when the packs in `models/` are replaced.
+       */
+      const params = new URLSearchParams(location.search);
+      const PACK = params.get("pack") ?? "trees";
+      const MODE = params.get("mode") ?? "report";
+
+      /** Colour maps are cut hard; they are the only maps kept. Nothing here needs a normal map. */
+      const MAX_TEXTURE = 256;
+
+      /**
+       * What to take out of each pack.
+       *
+       * `by` is a rule rather than a list, because a list of names is a list of names to get wrong:
+       * `tree-stylized-*` is every tree in the plants pack, and the size window is what separates the
+       * boulders from the outcrops and the backdrops.
+       *
+       * The city pack is the exception, and it is the opposite case: its names carry no meaning at all
+       * — every building in the diorama is `Cube.<number>` — so there is no rule to write, and the list
+       * below is what was left after measuring all 167 objects. What it keeps is the pack's
+       * building-scale pieces: houses and shopfronts of roughly 5–20 m across and 3–18 m tall, the
+       * shop, a bin and a bench. What it drops is everything that is not a prop — the 40–100 m backdrop
+       * shells the skyline is painted on, the 44 m pavement strips, the ground planes, and the interior
+       * clutter. Measured, not guessed: re-run `MODE=report` and the reason for each is in the report.
+       */
+      const CITY_PROPS = [
+        "Cube.045", "Cube.047", "Cube.028", "Cube.018", "Cube.044", "Cube.095", "Cube.191", "Cube.224",
+        "Cube.051", "MUSICSTORE_LOD1.001", "MUSICSTORE_LOD1.003", "Can", "banca_01.004",
+      ];
+      const PACKS = {
+        trees: { dir: "models/trees", by: (name) => name.startsWith("tree-stylized"), min: 0.5, max: 12 },
+        rocks: { dir: "models/rocks", by: (name) => /^Rock_\d+$/.test(name), min: 0.8, max: 24 },
+        city: { dir: "models/city", by: (name) => CITY_PROPS.includes(name), min: 1.2, max: 40 },
+      };
+
+      const pack = PACKS[PACK];
+      if (!pack) throw new Error(`unknown pack ${PACK}`);
+      const step = (label) => console.log(`step ${label} @${Math.round(performance.now())}ms`);
+
+      step(`${PACK}: loading json`);
+      // The JSON is read directly as well as through the loader: it is where the material extensions
+      // and the node hierarchy are, and where each object's size is known before anything is decoded.
+      const json = await (await fetch(`/${pack.dir}/scene.gltf`)).json();
+
+      /** The image URI behind a material's colour, whichever extension is carrying it. */
+      const diffuseUri = (material) => {
+        const source =
+          material?.pbrMetallicRoughness?.baseColorTexture ??
+          material?.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseTexture;
+        if (!source) return null;
+        const image = json.textures[source.index]?.source;
+        const uri = image !== undefined ? json.images[image]?.uri : null;
+        return uri ? `/${pack.dir}/${decodeURIComponent(uri)}` : null;
+      };
+
+      const materialInfo = new Map();
+      for (const material of json.materials ?? []) {
+        materialInfo.set(material.name, {
+          uri: diffuseUri(material),
+          doubleSided: Boolean(material.doubleSided),
+          alphaMode: material.alphaMode ?? "OPAQUE",
+          alphaCutoff: material.alphaCutoff ?? 0.5,
+        });
+      }
+
+      /** Each object in the pack, with the name and size the selection rule is applied to. */
+      const accessors = json.accessors ?? [];
+      const objects = [];
+      const walk = (index, parent, chain) => {
+        const node = json.nodes[index];
+        const name = node.name ?? `node${index}`;
+        if (node.mesh !== undefined) {
+          const object = chain[chain.length - 1] ?? name;
+          const entry = objects.find((item) => item.name === object) ?? { name: object, parent, min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+          for (const primitive of json.meshes[node.mesh].primitives ?? []) {
+            const position = accessors[primitive.attributes.POSITION];
+            for (let axis = 0; axis < 3; axis += 1) {
+              entry.min[axis] = Math.min(entry.min[axis], position.min[axis]);
+              entry.max[axis] = Math.max(entry.max[axis], position.max[axis]);
+            }
+          }
+          if (!objects.includes(entry)) objects.push(entry);
+        }
+        for (const child of node.children ?? []) walk(child, node, [...chain, name]);
+      };
+      for (const index of json.scenes?.[json.scene ?? 0]?.nodes ?? []) walk(index, null, []);
+
+      const chosen = objects.filter((entry) => {
+        const height = entry.max[1] - entry.min[1];
+        return pack.by(entry.name) && height >= pack.min && height <= pack.max;
+      });
+      console.log(`chosen ${chosen.length} of ${objects.length} objects: ${chosen.map((entry) => entry.name).join(", ")}`);
+
+      step(`${PACK}: loading scene`);
+      const loaded = await new GLTFLoader().loadAsync(`/${pack.dir}/scene.gltf`);
+      loaded.scene.updateMatrixWorld(true);
+
+      /**
+       * Finds the node the pack named, in the loaded scene.
+       *
+       * The name is put through the same sanitiser the loader used on the way in. glTF names are free
+       * text, but three rewrites every node name with `PropertyBinding.sanitizeNodeName` because a name
+       * is also a property-binding path — and that strips the dots the city pack's own exporter put in
+       * its names, so `Cube.045` is `Cube045` by the time it is in the scene. Reading the JSON's name
+       * without passing it through the same function finds nothing, which is a whole pack silently
+       * missing rather than an error.
+       */
+      const findByName = (name) => {
+        const target = THREE.PropertyBinding.sanitizeNodeName(name);
+        let found = null;
+        loaded.scene.traverse((object) => {
+          if (found === null && object.name === target) found = object;
+        });
+        return found;
+      };
+
+      const textures = new Map();
+      const shrinkLog = [];
+
+      /** One shrunk texture per source image, shared by every material that wanted it. */
+      const texture = (uri, mime) => {
+        if (!uri) return null;
+        const key = `${uri}|${mime}`;
+        if (textures.has(key)) return textures.get(key);
+        const promise = new THREE.TextureLoader().loadAsync(uri).then((source) => {
+          const image = source.image;
+          const longest = Math.max(image.width, image.height);
+          const scale = Math.min(1, MAX_TEXTURE / longest);
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(image.width * scale));
+          canvas.height = Math.max(1, Math.round(image.height * scale));
+          const context = canvas.getContext("2d", { willReadFrequently: true });
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          const next = new THREE.CanvasTexture(canvas);
+          next.name = uri.split("/").pop();
+          // The exporter writes what this says: JPEG for colour, PNG wherever alpha is cut out of it.
+          next.userData.mimeType = mime;
+          // glTF textures are already the right way up; the exporter bakes a flip only for textures
+          // that ask for one, so this is the orientation the source had.
+          next.flipY = false;
+          next.colorSpace = THREE.SRGBColorSpace;
+          next.needsUpdate = true;
+          shrinkLog.push(`${next.name}: ${image.width}x${image.height} → ${canvas.width}x${canvas.height} ${mime}`);
+          return next;
+        });
+        textures.set(key, promise);
+        return promise;
+      };
+
+      const built = [];
+      for (const entry of chosen) {
+        const object = findByName(entry.name);
+        if (!object) {
+          console.log(`  ${entry.name}: NOT FOUND in the loaded scene`);
+          continue;
+        }
+        // The parts, in the pack's own space.
+        const parts = [];
+        object.traverse((child) => {
+          if (!child.isMesh || !child.geometry) return;
+          const name = child.material?.name ?? "";
+          const info = materialInfo.get(name) ?? { uri: null, doubleSided: true, alphaMode: "OPAQUE", alphaCutoff: 0.5 };
+          const geometry = child.geometry.clone();
+          geometry.applyMatrix4(child.matrixWorld);
+          parts.push({ name, info, geometry });
+        });
+        if (parts.length === 0) continue;
+
+        // Normalised: centred across X and Z, base at y = 0, 1 m tall.
+        const box = new THREE.Box3();
+        for (const part of parts) {
+          part.geometry.computeBoundingBox();
+          box.union(part.geometry.boundingBox);
+        }
+        const height = Math.max(0.001, box.max.y - box.min.y);
+        const scale = 1 / height;
+        const centre = box.getCenter(new THREE.Vector3());
+        const group = new THREE.Group();
+        group.name = entry.name.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 40);
+        let triangles = 0;
+        for (const part of parts) {
+          part.geometry.translate(-centre.x, -box.min.y, -centre.z);
+          part.geometry.scale(scale, scale, scale);
+          part.geometry.computeBoundingBox();
+          const limit = part.geometry.boundingBox;
+          const mime = part.info.alphaMode === "MASK" ? "image/png" : "image/jpeg";
+          const standard = new THREE.MeshStandardMaterial({
+            name: part.name,
+            map: await texture(part.info.uri, mime),
+            roughness: 0.92,
+            metalness: 0.02,
+            side: part.info.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+            alphaTest: part.info.alphaMode === "MASK" ? part.info.alphaCutoff : 0,
+            transparent: part.info.alphaMode === "BLEND",
+          });
+          triangles += Math.round((part.geometry.index ? part.geometry.index.count : part.geometry.attributes.position.count) / 3);
+          group.add(new THREE.Mesh(part.geometry, standard));
+        }
+        built.push({
+          group,
+          name: group.name,
+          source: entry.name,
+          triangles,
+          parts: parts.length,
+          metres: (entry.max[1] - entry.min[1]).toFixed(2),
+          box: [box.max.x - box.min.x, height, box.max.z - box.min.z].map((value) => Number((value * scale).toFixed(3))),
+        });
+      }
+
+      const root = new THREE.Group();
+      root.name = PACK;
+      for (const prop of built) root.add(prop.group);
+
+      const report = {
+        pack: PACK,
+        objects: built.map(({ group, ...entry }) => entry),
+        textures: shrinkLog.length,
+      };
+      const files = {};
+      if (MODE === "export") {
+        step(`${PACK}: exporting`);
+        const exporter = new GLTFExporter();
+        const glb = await exporter.parseAsync(root, { binary: true, maxTextureSize: MAX_TEXTURE });
+        step(`${PACK}: exported ${(glb.byteLength / 1024).toFixed(0)} KB`);
+        report.bytes = glb.byteLength;
+        const bytes = new Uint8Array(glb);
+        let binary = "";
+        const step2 = 0x8000;
+        for (let index = 0; index < bytes.length; index += step2) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(index, index + step2));
+        }
+        const base64 = btoa(binary);
+        const CHUNK = 512 * 1024;
+        const chunks = [];
+        for (let index = 0; index < base64.length; index += CHUNK) chunks.push(base64.slice(index, index + CHUNK));
+        files[PACK] = chunks;
+      }
+
+      window.__glb = files;
+      window.__report = JSON.stringify(report, null, 1);
+      window.__done = true;
+    </script>
+  </body>
+</html>

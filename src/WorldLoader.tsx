@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CharacterId } from "./game/character-catalog";
 import { characterCatalog } from "./game/character-catalog";
 import type { Environment } from "./game/run-state";
+import { roadsideModels } from "./game/roadside-models";
 import { worldById } from "./game/worlds";
 import { useWorld, world, type WorldSnapshot } from "./orbis/world-bus";
 
@@ -141,6 +142,18 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
    */
   useEffect(() => {
     world.showWorld(environment);
+  }, [environment]);
+
+  /**
+   * The scenery, fetched while the world is being armed.
+   *
+   * A world's props are a megabyte or two of models, and they are needed the moment the run starts.
+   * This screen is twenty to forty seconds of waiting on Orbis anyway, so the fetch belongs here: it
+   * overlaps the arming, and the roadside is drawn on the run's first frame instead of arriving a
+   * second into it. The load is cached by pack, so a second run in the same world is already loaded.
+   */
+  useEffect(() => {
+    void roadsideModels(environment);
   }, [environment]);
 
   useEffect(() => {

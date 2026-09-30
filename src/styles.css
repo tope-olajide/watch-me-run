@@ -275,6 +275,11 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .run-hud > div:last-child strong { display: block; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-controls { margin: 2px 0 0; color: #5d7c71; font-size: 8px; text-align: center; }
 .menu-note { margin: 0; color: #b08a7c; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .08em; line-height: 1.5; overflow-wrap: anywhere; }
+/* The CC-BY-4.0 credit for the scenery packs. Present in every world, so it stays quieter than the
+   controls line above it and reads as a footnote rather than part of the menu. */
+.menu-credits { margin: 4px 0 0; color: #4f6c62; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .06em; line-height: 1.6; text-align: center; }
+.menu-credits a { color: #7d9d90; text-decoration: none; border-bottom: 1px solid #33564c; }
+.menu-credits a:hover { color: #f0d9cf; border-bottom-color: #b08a7c; }
 .start-button { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 12px; padding: 17px 20px; border: 0; color: #071014; background: #f6c84c; cursor: pointer; font-weight: 600; text-transform: uppercase; }
 .start-button b { font-size: 24px; font-weight: 400; }
 .character-preview { width: 100%; height: 100%; }
