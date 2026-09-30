@@ -14,6 +14,12 @@ type RunnerCharacterProps = {
   state: AnimationState;
   /** Live run speed, so the run cycle keeps pace with the world instead of drifting. */
   speedRef?: { current: number };
+  /**
+   * Which way the runner faces. A run is shot from behind, so the default is their back; the menu's
+   * stage puts the player in front of the runner instead, and has to ask for it — the models are
+   * authored facing +Z, which is straight at the menu's camera.
+   */
+  facing?: "away" | "camera";
 };
 
 /** Run cycle speed at which the clip plays at its authored rate. */
@@ -41,7 +47,7 @@ const characterAssets: Record<CharacterId, string> = {
   mousey: mouseyUrl,
 };
 
-export default function RunnerCharacter({ characterId, state, speedRef }: RunnerCharacterProps) {
+export default function RunnerCharacter({ characterId, state, speedRef, facing = "away" }: RunnerCharacterProps) {
   const gltf = useLoader(GLTFLoader, characterAssets[characterId]);
   const model = gltf.scene;
   const mixer = useMemo(() => new THREE.AnimationMixer(model), [model]);
@@ -104,8 +110,30 @@ export default function RunnerCharacter({ characterId, state, speedRef }: Runner
 
   return (
     // Feet sit on y = 0, which is also the road and obstacle baseline.
-    <group scale={normalized.scale} position={[0, 0, 0]} rotation={[0, Math.PI, 0]}>
+    <group scale={normalized.scale} position={[0, 0, 0]} rotation={[0, facing === "camera" ? 0 : Math.PI, 0]}>
       <primitive object={model} position={[0, normalized.y, 0]} />
     </group>
   );
+}
+
+/**
+ * Starts fetching a runner's GLB before anything renders it.
+ *
+ * `RunnerCharacter` is a lazy chunk behind a `Suspense` boundary in both places it appears, so the
+ * first frame that needs it either suspends or arrives late. The loading screen is the one place
+ * with time to spare, so it calls this: the chunk is imported and the model warmed into the loader
+ * cache the render then reads synchronously — which is what keeps the stand-in from ever being on
+ * screen.
+ *
+ * Returns the load, so the loading screen can *wait* for the runner rather than only start it: a
+ * promise is the difference between the run opening with the character in it and the run opening
+ * with a gap where the character goes.
+ */
+export function preloadCharacter(characterId: CharacterId): Promise<void> {
+  // `useLoader.preload` does return the load — suspend-react's `preload` — even though the R3F types
+  // declare it `void`. It is funnelled through `Promise.resolve` on purpose: if a future version
+  // really does return nothing, awaiting a non-thenable resolves at once and the loading screen
+  // simply stops waiting for the runner instead of hanging on it.
+  const loading = useLoader.preload(GLTFLoader, characterAssets[characterId]) as unknown;
+  return Promise.resolve(loading).then(() => undefined);
 }

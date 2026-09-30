@@ -29,7 +29,7 @@ import { panelAnchor, type PropId, type PropMetrics } from "./roadside-props";
  * Z; the scene wraps those offsets by the distance travelled every frame (see the `Roadside`
  * component). That is what makes recycling invisible: no spawning, no culling list, no React state
  * churn — a piece that leaves the far end of the cycle has already reappeared behind the runner, and
- * the seam is 75 m away inside the far taper.
+ * the seam is 105 m away inside the far taper.
  *
  * The plan is seeded per world rather than random per run, so a world is the same place every time it
  * is visited. Variety between runs is what the content field is for; the desert skyline being
@@ -42,20 +42,32 @@ import { panelAnchor, type PropId, type PropMetrics } from "./roadside-props";
  * `NEAR` sits just behind the camera, so a piece is out of frame before it wraps; `FAR` is as far as
  * the apron is still solid enough to stand something on. Anything beyond it would be a prop floating
  * over a transparent ground, which is the one error the eye catches immediately at speed.
+ *
+ * The cycle was 75 m, ending 58 m ahead of the origin, and 58 m turns out to be inside the part of
+ * the road the eye is still reading: a piece arrived at that distance at full size and finished
+ * growing while it was still near the middle of the frame, which is what made the scenery look like
+ * it was appearing out of nowhere rather than standing there all along. It is now 105 m, ending 88 m
+ * out, and the apron's own fade has been carried out to meet it (see the terrain constants in the
+ * scene) so the far end of the cycle stands on ground that is still faintly there.
  */
 export const ROADSIDE_NEAR_Z = 17;
-export const ROADSIDE_FAR_Z = -58;
+export const ROADSIDE_FAR_Z = -88;
 export const ROADSIDE_CYCLE = ROADSIDE_NEAR_Z - ROADSIDE_FAR_Z;
 
 /**
  * Depth over which a piece shrinks away at the far end, in metres from `ROADSIDE_FAR_Z`.
  *
- * A recycle has to be hidden, and the far end is where there is nothing to hide it behind: at 75 m
+ * A recycle has to be hidden, and the far end is where there is nothing to hide it behind: at 105 m
  * the apron's alpha is nearly gone and the world's own haze is thin. So a piece is scaled down into
  * its own footprint as it approaches the end of the cycle and is a speck well before it wraps — it
  * *sinks* rather than pops, and the seam is never a visible event.
+ *
+ * Widened with the cycle: 24 m of growth instead of 12 m, so a piece reaches its full size far enough
+ * ahead that the eye has long since accepted it as part of the landscape. The scale is still a cheat —
+ * the piece is the right size at the wrong distance — but the distances at which it is applied are now
+ * all beyond the point where anything about a prop's size can be read.
  */
-const ROADSIDE_TAPER_Z = -46;
+const ROADSIDE_TAPER_Z = -64;
 
 /**
  * How far into its own height a piece is set into the ground.

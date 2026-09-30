@@ -131,6 +131,8 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
   const generationAt = useRef<number | null>(null);
   /** Set when the frames never arrived and the wait for them was given up on. */
   const [framesGaveUp, setFramesGaveUp] = useState(false);
+  /** True once the runner's model is in the loader cache, or once trying has been given up on. */
+  const [characterLoaded, setCharacterLoaded] = useState(false);
   const character = characterCatalog.find((item) => item.id === characterId);
   const selected = worldById(environment);
   /** Whether the world's frames have actually reached the screen, as opposed to being asked for. */
@@ -155,6 +157,37 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
   useEffect(() => {
     void roadsideModels(environment);
   }, [environment]);
+
+  /**
+   * The runner, loaded while Orbis is being waited for — and waited for in turn.
+   *
+   * The runner is a lazy chunk whose model is a couple of megabytes, rendered in the run behind a
+   * suspense boundary. Without this the run's first frame either waits on the fetch or shows the
+   * boundary's fallback, and that fallback used to be a capsule: the delivery shape the collision is
+   * built around, on screen for as long as the model took to arrive, in a game that has no capsule
+   * in it. The boundary's fallback is empty now, which removes the stand-in but not the gap — so the
+   * model is not merely started here, it is waited for, and `armed` below will not hand the run over
+   * until the runner is in hand.
+   *
+   * The wait is bounded by the same budgets as everything else on this screen: a model that will not
+   * load fails into `characterLoaded` rather than holding the run, because a run that always starts is
+   * the promise this screen exists to keep.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    setCharacterLoaded(false);
+    void import("./game/RunnerCharacter")
+      .then((module) => module.preloadCharacter(characterId))
+      .then(
+        () => { if (!cancelled) setCharacterLoaded(true); },
+        // A failed fetch is not a reason to keep the player here: the run opens, and the world layer's
+        // own recovery is what is allowed to retry things.
+        () => { if (!cancelled) setCharacterLoaded(true); },
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [characterId]);
 
   useEffect(() => {
     const budget = failed ? LOADING_ERROR_FALLBACK_MS : LOADING_FALLBACK_MS;
@@ -192,7 +225,8 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
     state.status === "ready" &&
     state.session.started &&
     !state.pinning &&
-    (streaming || framesGaveUp);
+    (streaming || framesGaveUp) &&
+    characterLoaded;
 
   useEffect(() => {
     if (reported.current || (!armed && !timedOut)) return;
@@ -246,7 +280,12 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
 
         {character && (
           <p className="loader-runner">
-            {character.label} is ready · {selected.intro.line.toLowerCase()}
+            {/* The one part of the wait the player can check for themselves is the runner, so it is
+                named honestly: warming until its model is actually in hand, and ready after that.
+                "is ready" used to be a claim this screen had nothing to back. */}
+            {characterLoaded
+              ? `${character.label} is ready · ${selected.intro.line.toLowerCase()}`
+              : `Warming up ${character.label} · ${selected.intro.line.toLowerCase()}`}
           </p>
         )}
       </div>

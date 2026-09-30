@@ -66,3 +66,34 @@ export const worlds: World[] = [
 export function worldById(id: Environment): World {
   return worlds.find((world) => world.id === id) ?? worlds[0];
 }
+
+/**
+ * Which world the player last chose, remembered so the menu opens on it next time.
+ *
+ * The menu asks the same question every visit, and the answer is usually the same as last time — so
+ * the card that was picked stays picked, and the picture they uploaded comes back with the world it
+ * was chosen for (see `landscape-store`, which restores the file this id belongs to).
+ *
+ * A store that cannot be read — private browsing, storage disabled — is not an error here: no
+ * remembered answer means the first world, which is what the menu did before this existed. That is
+ * also why the read is validated against the catalog rather than trusted: a stale or hand-edited key
+ * must not put the game into a world that does not exist.
+ */
+const WORLD_CHOICE_KEY = "watchme-run:world";
+
+export function readWorldChoice(): Environment | undefined {
+  try {
+    const stored = window.localStorage.getItem(WORLD_CHOICE_KEY);
+    return worlds.some((world) => world.id === stored) ? (stored as Environment) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function rememberWorldChoice(id: Environment): void {
+  try {
+    window.localStorage.setItem(WORLD_CHOICE_KEY, id);
+  } catch {
+    // Nothing to do and nothing worth saying: the choice simply is not kept.
+  }
+}

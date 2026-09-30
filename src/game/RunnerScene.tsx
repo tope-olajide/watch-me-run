@@ -51,13 +51,17 @@ const ROAD_WIDTH = 10.5;
 /**
  * The marked road is a ribbon over a wider game-owned terrain surface.
  *
- * 56 m is seven whole 8 m tiles, so the dash pattern closes on the far edge rather than being cut
- * mid-tile, and the ribbon now reaches about 8 m further toward the horizon than the 46 m it
- * replaced — road the runner can see ahead of them instead of the end of a strip. The fade is a
- * proportion of this length, so the extra metres lengthen the blend with the world rather than
- * moving it.
+ * 96 m is twelve whole 8 m tiles, so the dash pattern closes on the far edge rather than being cut
+ * mid-tile. It used to be 56 m — seven tiles — and was cut down from 46 m before that, on the
+ * reasoning that more length was always more road; what that missed is that the ribbon's own fade,
+ * not the plane's edge, is what the eye reads as "the end of it". At 56 m the fade gave full opacity
+ * for the first 8 m and was gone by 32 m, so the road dissolved less than two seconds ahead of the
+ * runner and the world past it belonged to the apron. The fade now holds full opacity for the first
+ * 40 m and is gone by 83 m (see `createRoadFade`), against a ribbon twice as long so the far edge is
+ * well inside the transparent tail: a fade that ends exactly at the edge of a plane shows the very
+ * seam it exists to hide.
  */
-const ROAD_LENGTH = 56;
+const ROAD_LENGTH = 96;
 const ROAD_NEAR_Z = 16;
 const ROAD_CENTER_Z = ROAD_NEAR_Z - ROAD_LENGTH / 2;
 const ROAD_TILE_WORLD = 8;
@@ -74,15 +78,24 @@ const ROAD_TILES = ROAD_LENGTH / ROAD_TILE_WORLD;
  * eye sees it: solid under the runner, half gone by mid-frame, and clear of the generated landscape
  * by the time the horizon band arrives. The banks are kept under 2 m for the same reason — anything
  * taller rises into frame at the horizon and walls the world off.
+ *
+ * It was 90 m, going transparent 54 m out, and that was the ceiling on how far ahead the scenery
+ * could stand: a prop past the point where the apron had faded was a prop floating over the video,
+ * and the eye catches that at speed. Carrying the same fade — solid under the runner, half gone by
+ * mid-frame, clear before the horizon band — out to a 120 m apron puts the transparent end at about
+ * 92 m, which is what the roadside's own far taper now wraps inside. The fade band still covers
+ * roughly a tenth of the frame, so it is a blend rather than a line; it simply starts and finishes
+ * further up, because the screen compresses hard near the horizon and ten metres of ground there are
+ * worth barely one row of pixels.
  */
 const TERRAIN_WIDTH = 360;
 const TERRAIN_NEAR_Z = 16;
-const TERRAIN_LENGTH = 90;
+const TERRAIN_LENGTH = 120;
 const TERRAIN_SEGMENTS_X = 144;
-const TERRAIN_SEGMENTS_Z = 90;
+const TERRAIN_SEGMENTS_Z = 96;
 /** Depth over which the apron dissolves: solid under the runner, gone before the horizon band. */
-const TERRAIN_FADE_START = 0.26;
-const TERRAIN_FADE_END = 0.78;
+const TERRAIN_FADE_START = 0.28;
+const TERRAIN_FADE_END = 0.9;
 const TERRAIN_ROAD_SHOULDER = ROAD_WIDTH / 2 + 0.25;
 
 /**
@@ -479,11 +492,19 @@ function createRoadFade(): THREE.CanvasTexture {
   const image = context.createImageData(width, height);
 
   // The ribbon is solid under the runner and dissolves beyond it so the terrain apron reads through.
+  //
+  // The breakpoints are fractions of `ROAD_LENGTH`, and they moved with it rather than staying put: at
+  // the old 56 m the same shape dissolved the ribbon 8 m out and finished it at 32 m, which put the
+  // end of the road inside the part of the frame the runner is still reading. On a 96 m ribbon these
+  // hold full opacity for 40 m and are gone by 83 m, so the ribbon now runs out around the same place
+  // the apron's own fade begins to tell (see `TERRAIN_FADE_*`) instead of being a short mat with the
+  // world visible past it. The last stop is deliberately short and shallow: the tail has to be under
+  // the apron's alpha, or the road would finish as a visible band across the generated world.
   const distanceAlpha = (v: number) => {
-    if (v <= 0.15) return 1;
-    if (v <= 0.4) return 1 - ((v - 0.15) / 0.25) * 0.55;
-    if (v <= 0.65) return 0.45 - ((v - 0.4) / 0.25) * 0.33;
-    if (v <= 0.85) return 0.12 - ((v - 0.65) / 0.2) * 0.12;
+    if (v <= 0.42) return 1;
+    if (v <= 0.6) return 1 - ((v - 0.42) / 0.18) * 0.55;
+    if (v <= 0.74) return 0.45 - ((v - 0.6) / 0.14) * 0.33;
+    if (v <= 0.86) return 0.12 - ((v - 0.74) / 0.12) * 0.12;
     return 0;
   };
 
@@ -1099,23 +1120,18 @@ function Player({
         <planeGeometry args={[1.8, 2.3]} />
         <meshBasicMaterial map={contactShadowTexture()} transparent depthWrite={false} opacity={0.7} />
       </mesh>
-      <Suspense fallback={<PlayerPlaceholder animation={animation} />}>
+      {/*
+        The fallback is empty on purpose. It used to be a capsule — the shape the collision maths
+        is built around — and it showed for the frame or two between the run appearing and the
+        runner's GLB landing, which is a frame the player should never see the scaffolding in. The
+        model is warmed by `preloadCharacter` while the loading screen is up (see `WorldLoader`), so
+        this boundary should not suspend at all; if it ever does, the runner is briefly absent
+        rather than briefly a cylinder. The collision is the simulation's, not this mesh's.
+      */}
+      <Suspense fallback={null}>
         <RunnerCharacter characterId={characterId} state={animation} speedRef={speedRef} />
       </Suspense>
     </group>
-  );
-}
-
-function PlayerPlaceholder({ animation }: { animation: PlayerAnimation }) {
-  return (
-    <mesh
-      castShadow
-      position={[0, animation === "jump" ? 1.3 : animation === "slide" ? 0.35 : 0.85, 0]}
-      scale={[0.55, animation === "slide" ? 0.55 : 1, 0.4]}
-    >
-      <capsuleGeometry args={[0.38, 0.85, 8, 16]} />
-      <meshStandardMaterial color="#f4f0e8" roughness={0.62} />
-    </mesh>
   );
 }
 

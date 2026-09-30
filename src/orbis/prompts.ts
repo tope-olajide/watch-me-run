@@ -7,6 +7,26 @@ const environmentOpenings: Record<Environment, string> = {
 };
 
 /**
+ * Composition that one world needs stated outright, carried by both its opening and its launch.
+ *
+ * The horizon clause below holds the *line* — sky above, ground below — but says nothing about how
+ * much frame each side gets, and a night world is where that distinction bites. "A neon city at
+ * night" is, to a model, mostly night: left to itself the city opened on an expanse of dark sky
+ * with the skyline somewhere far down the frame, and only grew the buildings once the run had been
+ * going long enough for the distance events to push it there. The player's first impression of
+ * Neon Pursuit was therefore a sky with no city in it.
+ *
+ * So the city is told where its buildings are from the first frame. Nothing else moves: this is a
+ * composition clause, it does not ask for a camera move (a move is the one thing `horizonLine`
+ * forbids), and the ground stays as empty as every other world's because the near band still belongs
+ * to the game's own road.
+ */
+const environmentFraming: Partial<Record<Environment, string>> = {
+  city:
+    "The shot is at street level and the city is already there on the very first frame: a dense, tall skyline of lit towers, rooftops and signs fills the frame from the left edge to the right edge immediately above the horizon line, and the visible sky is only a narrow band above the buildings, never an open expanse of night sky.",
+};
+
+/**
  * What a prompt is describing: a world, or a picture the player supplied.
  *
  * The distinction is not cosmetic. A landscape grown from the player's own image must be *that
@@ -179,13 +199,18 @@ export function openingPrompt(view: WorldView): string {
   return [
     subject,
     cameraDirection,
+    // A supplied picture has its own composition and is not talked over; a generated world may need
+    // the one thing its subject line left open, which is how much of the frame is sky.
+    view.custom ? undefined : environmentFraming[view.environment],
     view.custom ? customEmptyFrame : emptyFrame,
     // The generated world has no path of its own: the game draws the only path the runner uses, and
     // a path in the video would be a second road ending nowhere. What the video owns is the open
     // ground the game's ribbon fades into, and the far landscape beyond it.
     "The open ground below the horizon is flat and empty with no path, track or road on it, and the distant landscape is alive and evolving.",
     "Cinematic realism, strong environmental identity, stable composition.",
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**
@@ -206,10 +231,13 @@ export function launchPrompt(view: WorldView): string {
       ? "The camera glides slowly forward through that same landscape, the atmosphere of the place evolving far ahead."
       : `${launchOpenings[view.environment]}.`,
     cameraDirection,
+    view.custom ? undefined : environmentFraming[view.environment],
     view.custom ? customEmptyFrame : emptyFrame,
     "A strong sense of gliding deep into the distance as the far landscape slowly draws nearer, while everything close to the camera stays flat and empty.",
     "Cinematic realism, strong environmental identity, stable composition, no cuts.",
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**

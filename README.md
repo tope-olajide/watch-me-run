@@ -141,6 +141,17 @@ the ribbon, while sky over the fade band is the visible failure, so the margin i
 are banned by name ("a giant tree becomes visible" is a shot a camera earns by tilting up) — anything
 that arrives now arrives ahead on the horizon line with the camera staying put.
 
+Holding the *line* is not the same as holding the *picture*, and Neon Pursuit is where that gap
+showed: "a neon city at night" is, to a model, mostly night, and the city opened on an expanse of dark
+sky with its skyline far down the frame — the buildings only arrived once the run had gone far enough
+for a distance event to push them there, so the player's first minutes of the city were a sky with no
+city in it. The city therefore carries a composition clause of its own (`environmentFraming` in
+`src/orbis/prompts.ts`), on the opening and the launch alike: street level, the skyline already filling
+the frame edge to edge immediately above the horizon line, the visible sky a narrow band above the
+buildings. It asks for no camera move — the one thing this paragraph exists to forbid — and the near
+ground stays as empty as every other world's, because that band still belongs to the game's road. It is
+a request like the rest of them, so the horizon lock remains the thing that keeps the promise.
+
 Prompts are a request, though, and a measured one is kept: `src/orbis/world-align.ts` reads the real
 frames and holds the generated horizon to that line. It finds the generated skyline as the sharpest
 *darkening* step between rows — every live capture from all three worlds shows the same shape, a
@@ -182,10 +193,18 @@ at least 900 ms (`LOADING_MIN_MS`) so a world that is already warm renders as a 
 flash.
 
 *Armed* means the session is ready, started, nothing is still being pinned into it, **and its first
-frames have reached the screen**. That last clause is not pedantry: `started` is the model's word for
+frames have reached the screen** — and, the same idea one layer down, **the runner's model is in
+hand**. That last clause is not pedantry: `started` is the model's word for
 its loop being on, and the loader used to hand the run over on it alone — measured on a cold desert
 start, the loading screen left with `video: waiting` and the probe's first frame check read `null`,
-because the first frames landed after the player was already on screen. The wait for them is bounded
+because the first frames landed after the player was already on screen. The runner's model is a couple
+of megabytes behind a lazy chunk, and the run renders it through a suspense boundary whose fallback
+used to be a capsule — the delivery shape the collision mathematics is built around — on screen for as
+long as the fetch took, in a game that has no capsule in it. The fallback is empty now, which removes
+the stand-in but leaves the gap where the runner goes, so the loading screen fetches the model
+(`preloadCharacter` in `src/game/RunnerCharacter.tsx`) and waits for it, naming the runner as warming
+until it is really there. It cannot wedge the run: a failed fetch resolves rather than holding, and the
+budgets above still open the run on their own. The wait for them is bounded
 at `LOADING_FRAMES_MS` (8 s), because the promise this screen has to keep is that a run always starts:
 a session that generates and never paints — autoplay blocked, a transport that stalled after the start
 — opens the run on the local backdrop instead, the same fallback as the timeout, with Orbis still
@@ -271,6 +290,22 @@ Two files carry the wiring: `src/game/character-catalog.ts` (ids and labels) and
 runner's file is fetched — the menu pulls it when the card is picked and the run reuses it from
 cache — so a visit downloads 2–3.4 MB of character, not all three.
 
+**Two rigs, one model.** A run is shot from behind — the camera sits above and behind the player, and
+the runner faces away down the road — so `RunnerCharacter` turns the model 180° by default. The menu
+has the opposite job: it is the one screen where the player is choosing a character, so the preview
+passes `facing="camera"` and the runner turns to look back at them. The models are authored facing
++Z, so that flag is the whole difference between a back and a face.
+
+The preview camera is also why the menu once showed a headless dancer. R3F calls
+`camera.lookAt(0, 0, 0)` on any `camera` prop that does not carry a `rotation`, and the runner's
+origin is its feet: the frame was centred on the ground under the character, so the body filled the
+upper half of it and the head sat above the top edge. The camera now sits at chest height with an
+explicit `rotation` — which is also what tells R3F to leave the aim alone — and a 32° lens 5 m back
+holds the 2.35 m model with room above the head for a raised arm. Measured with
+`frame-report --activity` on two clipped captures of the stage 0.4 s apart: the runner's movement now
+spans 10%→90% of the stage frame, where the old rig put all of it in the top half with the bottom 40%
+empty.
+
 **The FBX sources stay in `models/`** as the source of truth but are kept out of git — 122 MB of FBX
 against 6.9 MB of GLB, so only the GLBs are committed (`.gitignore` carries the `models/**/*.fbx`
 rule) — and `tools/fbx-to-glb.mjs` rebuilds the GLBs from them: 4096² textures are cut to 1024 (colour)
@@ -345,6 +380,32 @@ smallest one that both covers a 16:9 frame and allows the horizon to sit on the 
 is solved directly, so the horizon lands *on* the line rather than near it. Sides are cropped
 symmetrically; a picture whose horizon is already near the line is barely touched. A picture with no
 clear horizon is not guessed at — it is centred on its cover crop and the menu says so.
+
+**The picture is kept, and the world to run it in is asked for beside it.** Uploading is work the
+player did with a file from their own device, so it is not thrown away on a reload: the `File` itself
+is stored (`src/orbis/landscape-store.ts`, IndexedDB) and run back through the same preparation on the
+next visit, which reproduces the identical landscape — same crop, same measured horizon, same seed,
+same preview — without storing a prepared JPEG that could drift from the code that made it. Storing
+the file rather than a string is also why it is IndexedDB and not `localStorage`: an upload may
+legitimately be 14 MB of pixels (`LANDSCAPE_MAX_BYTES`). Every path here is best-effort — private
+browsing, a blocked store, a quota error each degrade to "no stored picture", which is what the menu
+did before — and the clear control deletes the record, so a picture the player removed stays removed.
+
+The world is asked for in the same block, as soon as there is a picture to run in. A picture replaces
+a world's *scenery*, not the world: the pacing, the obstacles, the road and the roadside still come
+from the world cards, which makes the world a real second half of the upload rather than a setting
+somewhere above it — so the three cards appear under the picture under the heading *Where do you want
+to run?*, and a pick there moves the selected card above it (verified in the probe: picking Neon
+Pursuit in the block sets `world-card.world-city.selected` and the stored choice, and the reload comes
+back on both). The choice itself persists in `localStorage` (`readWorldChoice` / `rememberWorldChoice`
+in `src/game/worlds.ts`), validated against the catalog on read so a stale key cannot put the game into
+a world that does not exist.
+
+Measured on the headless probe end to end: a fresh visit has no landscape card and no picker and
+starts on the last world; a 39 KB picture uploaded through the real control lands as *Horizon found at
+73% — placed on the game's horizon line* with the picker under it; picking Neon Pursuit there moves the
+card above and stores `city`; and after `Page.reload` the landscape card, its note, the picker and the
+city selection all come back from the store.
 
 Measured with the probe's own row scan of the *prepared* frame (not the app agreeing with itself),
 for four synthetic pictures whose horizons sat well below the line:
@@ -530,11 +591,21 @@ therefore moving slower than the runner. Three things carry that:
    changes) and `--run-speed` (pace) at about a third of their old strength — 0.5% and 0.025 where
    they were 1.4% and 0.09 — so the road and the runner carry the speed and the backdrop trails.
 
-Measured on captures, before and after, band by band (`frame-report` on the composite, the 3D layer
-and the video layer of the same instant): above 25% the composite is now pure video (sky, backdrop
-intact), 33–50% is video terrain at the meeting line, and below 58% the ribbon shows through the
-haze (|composite − video| 7–21 luma) while the video behind it drops to 15–20 — a lit path through
-atmosphere rather than a road laid over a photograph.
+Measured on captures, band by band (`frame-report` on the composite, the 3D layer and the video layer
+of the same instant), in the desert: above 33% the composite is the video's (they agree to a few luma),
+the 42–50% band is where the two hand over, and from 58% down the ribbon carries the frame
+(|composite − video| 13 luma at 58%, 40 by 83%) while the video behind it falls away (44 → 17) — a lit
+path through atmosphere rather than a road laid over a photograph.
+
+The ribbon itself was lengthened with the roadside's reach, and for the same reason. It is 96 m of
+plane now — twelve whole 8 m tiles, so the dashes still close on the far edge — against 56 m, and its
+fade was re-cut to match: full opacity for the first 40 m and gone by 83, where it used to be solid for
+8 m and gone by 32. The local apron under it grew from 90 m to 120 m with its dissolve carried out to
+about 92 m, because the scenery's own far taper had to be standing on ground that was still there. On
+screen this is not the move the numbers suggest, because the projection compresses hard near the
+horizon: the ribbon's fade now completes about 48% down the frame rather than 53%. What the eye gets
+is that the ribbon is *solid* from the bottom of the frame up to about 54% where it used to be solid
+only to 65% — a road running to the meeting line instead of a mat laid on the ground.
 
 The ribbon's grade follows the same reading: `world-palette` measures the ground band *just under the
 measured horizon* (published by the vertical lock as `--world-horizon-window`) rather than the lower
@@ -550,9 +621,9 @@ backdrop. The roadside fills the gap with content the run moves past, per world:
 
 | world | what stands beside the road | pieces a cycle | panels |
 | --- | --- | --- | --- |
-| desert | five kinds of bought boulder in clusters, more of them bigger further out, five rock outcrops as the landform, saguaros, low adobe houses, signs | 77 in 14 kinds | 7 |
-| city | the pack's shopfronts and houses at the kerb, its bins and bench as clutter, the tall narrow blocks in the skyline, street lights reaching over the shoulder, a billboard on legs, a sign on a roof | 62 in 13 kinds | 9 |
-| forest | the pack's five trees in two stands, five kinds of stone between them, fallen logs and stumps at the shoulder, trail markers | 88 in 13 kinds | 6 |
+| desert | five kinds of bought boulder in clusters, more of them bigger further out, five rock outcrops as the landform, saguaros, low adobe houses, signs | 105 in 16 kinds | 11 |
+| city | the pack's shopfronts and houses at the kerb, its bins and bench as clutter, the tall narrow blocks in the skyline, street lights reaching over the shoulder, a billboard on legs, a sign on a roof | 92 in 16 kinds | 12 |
+| forest | the pack's five trees in two stands, five kinds of stone between them, fallen logs and stumps at the shoulder, trail markers | 115 in 13 kinds | 7 |
 
 Those pieces are not boxes either. The first roadside was one unit cube scaled per piece — cheap, and
 it read as a fence of crates, because at 30 m/s there is no time to resolve a silhouette out of a box.
@@ -574,24 +645,35 @@ preference (see `planRoadside`). That is also what a world does when a pack fail
 falls back to its authored conifers and boulders and still runs, rather than starting with nothing
 beside the road.
 
-The layout is fixed data — each piece at a fixed offset in a 75 m cycle of Z, seeded per world so a
+The layout is fixed data — each piece at a fixed offset in a 105 m cycle of Z, seeded per world so a
 world is the same place every visit — and the scene wraps that cycle by the distance travelled each
 frame, so a piece leaving the far end has already reappeared behind the runner. Nothing spawns, nothing
 is culled, no React state changes per frame; the only per-frame work is one matrix per piece.
 
+That cycle was 75 m, ending 58 m ahead of the origin, and 58 m is inside the part of the road the eye
+is still reading: a piece arrived at that distance at full size, having finished growing while it was
+still near the middle of the frame, which is what made the scenery read as appearing out of nowhere
+rather than standing there all along. The density of the cycle is unchanged — the same rows at the
+same spacing, so the road looks exactly as busy — it is simply 40% longer, which is 40% more metres
+of warning before anything is beside the runner.
+
 Three details are what keep it from looking wrong at speed:
 
-- **Taper, not pop.** Pieces shrink into their own footprint over the last 12 m (`roadsideTaper`). At
-  75 m the apron's alpha is nearly gone and the world's haze is thin, so a recycle has nothing to hide
-  behind and the seam would otherwise be a visible event.
+- **Taper, not pop.** Pieces shrink into their own footprint over the last 24 m (`roadsideTaper`). At
+  105 m the apron's alpha is nearly gone and the world's haze is thin, so a recycle has nothing to hide
+  behind and the seam would otherwise be a visible event. The taper is wide in metres because the
+  screen is what is narrow up there: 24 m of ground between 64 m and 88 m out is a couple of percent of
+  the frame's height, so a piece grows from a speck to its own size over about a second of travel at a
+  spot the eye has already accepted as landscape.
 - **Cleared from the inner edge, not the centre, and measured rather than declared.** A piece is
   positioned from its row's *inner clearance* outwards, so a bigger one moves further out rather than
   reaching across the shoulder, and the clearance is worked out from the geometry's own bounding box
   (`PropMetrics`) — moving an arm on the cactus moves the clearance with it, and a bought boulder brings
-  its own. Measured over a whole
-  plan: the nearest piece edge stands 6.25 m from the road centre against a road edge at 5.25 m. The
-  city's street light is the nearest thing in any world, and its arm is what reaches in — the head
-  hangs about a metre off the kerb at 4.7 m up.
+  its own. The nearest
+  piece edge therefore stands at its row's clearance and never inside it — 6.2 m from the road centre at
+  the closest, which is the city's street light, against a road edge at 5.25 m — and the light is also
+  the nearest thing in any world physically: its arm is what reaches in, hanging about a metre off the
+  kerb at 4.7 m up.
 - **On the ground, and a little into it.** Pieces used to sit on one flat base height, which was wrong
   wherever the apron's banks are not flat: the banks climb to 1.75 m, so near-shoulder pieces floated
   about half a metre and outer ones were buried. The apron's height field now lives in its own module
@@ -619,10 +701,10 @@ a random yaw would face away from the runner, and the picture is the point of it
 the first seconds of a run, or any run in local world mode — they carry `createPosterArt`'s abstract
 panel for that world, because a lit panel with nothing on it is a black rectangle.
 
-Verified on headless runs in all three worlds, from `window.__roadside()`: 77 pieces in 14 kinds and 7
-panels in the desert, 62 in 13 kinds and 9 panels in the city, 88 in 13 kinds and 6 panels in the
-forest — identical to the plans the layout module produces on its own in node, which is what "the plan
-is seeded per world" means in practice. `models` reports how many cooked props the world has to draw
+Verified on headless runs in all three worlds, from `window.__roadside()`: 105 pieces in 16 kinds and
+11 panels in the desert, 92 in 16 kinds and 12 panels in the city, 115 in 13 kinds and 7 panels in the
+forest — the same figures on every run of a world, which is what "the plan is seeded per world" means
+in practice. `models` reports how many cooked props the world has to draw
 from (15 for the desert, 20 for the forest, 13 for the city), `travel` advances at the road's own
 speed, `panelSource` reads `live` in every one of them a few seconds into a run (the sampler's canvas
 being uploaded, which also confirms a stream-backed canvas is origin-clean and usable as a texture),
@@ -637,18 +719,22 @@ generated world drifting between captures:
 
 | world | with | without | with | contribution |
 | --- | --- | --- | --- | --- |
-| city | 24.5 | 25.4 | 24.6 | **−0.9 luma**, whole frame |
-| forest | 60.4 | 66.7 | 61.4 | **−5.8 luma** |
-| desert | 79.0 | 79.6 | 79.0 | **−0.6 luma** |
+| city | 57.0 | 62.9 | 56.0 | **−6.4 luma**, whole frame |
+| forest | 59.5 | 67.7 | 57.9 | **−9.0 luma** |
+| desert | 70.9 | 67.7 | 72.9 | **+4.2 luma** |
 
-The contribution is the later "with" against the "without": in every world the roadside covers more of
-the frame with darker tone than the ground behind it. It is a little in the desert (−0.6: boulders are
-sandstone on sand, reading by shape and the shadow under them rather than by tone), the most in the
-forest (−5.8: a stand of dark canopies and stones the length of the shoulder in front of a pale world,
-and −4.9 when the capture was run again), and least in the city (−0.9: the pack's textured buildings
-sit in the world's tone, where the authored near-black blocks they replaced read −14). The two "with"
-frames agreeing to within a luma or two is what rules out drift — a flat with/without pair cannot,
-because the video layer keeps changing between them.
+The contribution is the later "with" against the "without", and on a roadside this long it is largest
+where the pack's shapes are dark against a pale world: the forest (−6.1, −9.0 and +1.5 across three
+passes) and the city (−5.3, −6.2, −6.4), whose textured buildings sit in the world's tone where the
+authored near-black blocks they replaced read −14. The desert is the one world where the scenery *adds*
+luma rather than taking it away (+3.4, +3.6, +4.2): its boulders are sandstone on sand, read by shape
+and the shadow under them rather than by tone, and there are enough of them now to outweigh it.
+
+The spread between passes is the world's, not the roadside's. A pass is only readable because the two
+"with" frames agree to about a luma, which rules out drift *inside* it — the forest's +1.5 came from a
+pass whose generated world ran at 33 luma against its usual 59, and the desert figure this replaced was
+−0.6 in a single drifting pass. Nothing in a three-frame capture can rule out the world behind the
+roadside changing between passes, which is why the table is a sample rather than a constant.
 
 The apron under all of it is drawn per world (`TERRAIN_DETAIL` in `RunnerScene.tsx`). One mottling
 serving as the material for all three read as exactly that — the same ground under a dune, a paving

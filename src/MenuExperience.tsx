@@ -3,8 +3,9 @@ import type { ChangeEvent } from "react";
 import type { CharacterId } from "./game/character-catalog";
 import { characterCatalog } from "./game/character-catalog";
 import type { Environment } from "./game/run-state";
-import { worlds } from "./game/worlds";
+import { readWorldChoice, rememberWorldChoice, worlds } from "./game/worlds";
 import { LandscapeError, landscapeNote, prepareLandscape } from "./orbis/landscape";
+import { clearLandscapeFile, loadLandscapeFile, saveLandscapeFile } from "./orbis/landscape-store";
 import { menuWorldLabel, useWorld, world, worldTone } from "./orbis/world-bus";
 
 const CharacterPreview = lazy(() => import("./game/CharacterPreview"));
@@ -18,7 +19,8 @@ type MenuExperienceProps = {
 };
 
 export default function MenuExperience({ onStart, entering = false, returning = false }: MenuExperienceProps) {
-  const [environment, setEnvironment] = useState<Environment>("desert");
+  // The world the player chose last visit, when there is one: the menu opens on the place they left.
+  const [environment, setEnvironment] = useState<Environment>(() => readWorldChoice() ?? "desert");
   const [characterId, setCharacterId] = useState<CharacterId>("amy");
   const [preparing, setPreparing] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
@@ -44,6 +46,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
    */
   useEffect(() => {
     world.select(environment);
+    rememberWorldChoice(environment);
   }, [environment]);
 
   /**
@@ -62,6 +65,8 @@ export default function MenuExperience({ onStart, entering = false, returning = 
     setPreparing(true);
     try {
       world.selectLandscape(await prepareLandscape(file));
+      // Kept for the next visit, not waited for: the menu is already showing the prepared picture.
+      void saveLandscapeFile(file);
     } catch (cause) {
       setUploadError(
         cause instanceof LandscapeError ? cause.message : "That image could not be prepared.",
@@ -74,6 +79,40 @@ export default function MenuExperience({ onStart, entering = false, returning = 
   const clearLandscape = useCallback(() => {
     world.selectLandscape(null);
     setUploadError(undefined);
+    // Removed here means removed: a picture the player deleted must not reappear on the next visit.
+    void clearLandscapeFile();
+  }, []);
+
+  /**
+   * The picture from the last visit, prepared again on mount.
+   *
+   * It is stored as the file the player chose (see `landscape-store`) and run back through the same
+   * preparation as a fresh upload, so the restored landscape is the identical object — same crop,
+   * same measured horizon, same seed, same preview — rather than a cached copy that could drift from
+   * what the code produces now. Until it lands the block reads as empty, which is honest: there is
+   * nothing to show yet, and the drop control is still there if they would rather pick something
+   * else.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const file = await loadLandscapeFile();
+      if (!file || cancelled) return;
+      setPreparing(true);
+      try {
+        const restored = await prepareLandscape(file);
+        if (!cancelled) world.selectLandscape(restored);
+      } catch {
+        // A file the browser can no longer decode is not worth keeping, and not worth an error:
+        // the player simply has no landscape, exactly as if they had never uploaded one.
+        await clearLandscapeFile();
+      } finally {
+        if (!cancelled) setPreparing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -234,6 +273,35 @@ export default function MenuExperience({ onStart, entering = false, returning = 
               onChange={pickLandscape}
               aria-label="Landscape image"
             />
+
+            {/*
+              Which world the picture is run in, asked here rather than left to the cards above.
+
+              A picture replaces a world's scenery, not the world: the pacing, the obstacles, the
+              road and the roadside still come from these three. That makes the world a real second
+              half of the upload — the picture is where, the world is how it plays — so the question
+              is asked at the moment the picture is chosen, and the answer moves the picked card
+              above with it. It appears only once there is a picture to run in.
+            */}
+            {landscape && (
+              <div className="landscape-worlds" role="group" aria-label="Where do you want to run?">
+                <span className="landscape-worlds-label">Where do you want to run?</span>
+                <div className="landscape-world-cards">
+                  {worlds.map((item) => (
+                    <button
+                      key={item.id}
+                      className={`world-pick world-${item.id} ${item.id === environment ? "selected" : ""}`}
+                      onClick={() => setEnvironment(item.id)}
+                      aria-pressed={item.id === environment}
+                      type="button"
+                    >
+                      <span className="world-index">{item.index}</span>
+                      <span className="world-pick-name">{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {landscape ? (
               <p className="landscape-hint">

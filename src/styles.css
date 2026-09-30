@@ -267,6 +267,18 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .landscape-clear { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid #33564c; background: none; color: #9ec0b2; font-size: 11px; cursor: pointer; flex: none; }
 .landscape-clear:hover { border-color: #b08a7c; color: #f0d9cf; }
 .landscape-hint { margin: 0; color: #6d8b80; font-size: 10px; line-height: 1.5; }
+/* Which world the picture is run in, asked beside the picture rather than left to the cards above:
+   the picture is the place, these three are how it plays. The tint bar is the same language the
+   world cards use, so a pick here and the card above are legibly the same choice. */
+.landscape-worlds { display: flex; flex-direction: column; gap: 7px; margin-top: 3px; }
+.landscape-worlds-label { color: #8fb0a4; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.landscape-world-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.world-pick { position: relative; display: flex; flex-direction: column; gap: 3px; padding: 9px 10px 9px 13px; border: 1px solid #2a453d; background: #0b1513d9; color: #dcebe3; text-align: left; cursor: pointer; overflow: hidden; transition: .2s ease; }
+.world-pick::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--world-tint, #3d6a5c); }
+.world-pick:hover { border-color: #47705f; }
+.world-pick.selected { border-color: var(--accent); box-shadow: inset 0 -3px var(--accent); }
+.world-pick .world-index { font-size: 8px; }
+.world-pick-name { font-size: 11px; font-weight: 500; letter-spacing: -.01em; }
 
 /* The run's world cell names the picture the player supplied, and a file name is long enough to push
    the HUD leftwards into the world chip beside it — the HUD is right-aligned, so it grows towards
