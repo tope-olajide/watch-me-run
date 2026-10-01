@@ -1,11 +1,15 @@
 # WatchMe Run
 
-A 3D endless runner where the player's actions shape a live Orbis-generated world.
+**A live 3D endless runner: the player's actions shape an Orbis-generated world that is generated
+while they play.** Reactor's `reactor/visko-orbis-stable` streams the landscape behind the runner in
+real time, and the Orbis Director steers it from what the run is doing — near misses, hits, speed,
+distance, pickups, the weather, the deal the run was taken under. You can also run inside a picture of
+your own, and the model grows the world out of it.
 
-The runner itself is deterministic — lanes, obstacles, jumping, sliding, damage, and score all
-run locally at full frame rate. Behind it, Reactor's `reactor/visko-orbis-stable` model generates
-the world the player is running through, and the Orbis Director steers that world from gameplay
-events: near misses, damage, speed, and distance.
+The runner is deterministic — lanes, obstacles, jumping, sliding, damage and score all run locally at
+full frame rate — because a game cannot wait on a model's latency to decide whether a jump cleared a
+block. What Orbis generates is everything around it: the world behind the road, its weather, its
+light, and the way all of that answers the player while they are still playing.
 
 The runners and their animation clips live in `models/` at the repository root, and the game loads
 them from there. The legacy `cave-runner` game in `reference/` is inspiration only — nothing under
@@ -34,25 +38,50 @@ sandbox cannot make outbound connections, in which case its token route answers 
 an `AggregateError` while the identical function code works on the host and on Netlify.
 The game stays playable in that case and says so in the world chip.
 
-## Testing without Orbis (temporary)
+## The world is generated, live, and the run is what steers it
 
-The run can be played without spending the account's session credits. One flag, one line:
-`src/orbis/orbis-switch.ts` exports `ORBIS_DISABLED`, currently `true` while the game is tested on
-its own. Flip it to `false` and reload to bring the live world back — nothing else changes, because
-the flag only decides whether `WorldLayer` is mounted:
+Orbis is not a backdrop this game was rendered against. `reactor/visko-orbis-stable` **generates the
+world while it is being played**, and the game's own events are the thing it is asked to answer — so
+the landscape behind the runner is different every second, every run and every world, and none of it
+exists before Start is pressed.
 
-- no session is created, and the Reactor SDK is not even fetched (the layer is never rendered);
-- `src/orbis/LocalWorld.tsx` draws the local backdrop and publishes a chunk tick every two seconds,
-  so the director schedules its asks against the world's real cadence and the world-answers feed
-  keeps working;
-- `WorldLoader` skips the Orbis wait, so a run starts in about three seconds instead of waiting out
-  the loading fallback;
-- prompts are still built and journaled (`window.__orbisPrompts`), then dropped at the world bus.
+**One uninterrupted generation, for as long as the visit lasts.** One session is created for the world
+a run asks for and kept for the whole visit: the menu stages the run, the world is asked for at Start,
+and it stays warm for 60 s after a run ends so going straight back in skips the wait. The model streams in
+chunks — a chunk of frames every 1.5–2 s, forever — and the game never waits on one: the runner, the
+road and the content field are local and run at full frame rate over whatever frame is on screen, so a
+late chunk is a world catching up rather than a game stuttering. There is no seam to loop and no length
+to run out of, which is the point: an endless runner has no fixed ending to pre-render, and the tenth
+kilometre of a run has to look like it was generated for that kilometre.
 
-`node tools/orbis-off-probe.mjs` proves all of that against a dev server: no `.world-layer`, no SDK
-resource, the snapshot stays `idle`, a run starts in seconds and plays, and the feed still carries
-`TERMS · …`. The gameplay probes (`flow-probe`, `contract-probe`, `meta-probe`) pass unchanged with
-the switch on.
+**The gameplay is the prompt.** `src/orbis/orbis-director.ts` turns what the run is doing into asks —
+near misses, hits, a tier crossing, a pickup, a gap threaded between two obstacles, the best line
+beaten, the deal the run was taken under, the weather arriving — and each world has written answers for
+each of them (`src/orbis/prompts.ts`): the desert's ruins pulse, the city's neon flares, the forest's
+plants brighten. At most one ask is spent per chunk, on a 1.8 s cooldown — with one sanctioned
+exception: an ask that may not be dropped waits at most 3.2 s for the next boundary and then goes out
+mid-chunk, where it is the newest prompt in force, and the journal says so (`deadline`). The events the
+*player* caused claim the next slot ahead of the world's own chatter, because a pickup or a hit is not
+news that may be dropped. The measured effect on that queue is in *The world's own weather*: the storm arrives at
+302 m and the world answers it at **325 m**.
+
+**The weather is the shortest path from play to picture.** Every world carries a hazard on its own
+schedule (`src/game/hazards.ts`), and it is the clearest case of the loop: the run announces it, Orbis
+is asked to make it real in the picture — *a wall of sand sweeps across the horizon*, *every light in
+the city fails at once from the horizon towards the camera*, *thick fog rolls across the ground and
+swallows everything past the nearest trees* — and the same hazard changes the rules of the run in the
+same seconds: the storm shoves the runner a whole lane, the blackout takes the light, the fog takes the
+planning distance. The player is watching the thing that is happening to them.
+
+**Your own picture becomes the world.** The landscape is optional and it is the player's: a photo, a
+drawing, a screenshot — anything — is measured, cover-cropped so its horizon lands on the game's own
+44% line, encoded as a 1280×720 JPEG with a seed derived from its pixels, and handed to the model as
+the session's starting image (`upload → measure → crop → reset → setImage → start`, and the file is
+kept so the next visit reproduces it exactly). Every prompt for that world is then written against it
+— *the exact landscape supplied as the starting frame… the same terrain, the same colours, the same
+light… carried forward* — and generation grows a moving world out of the picture for the whole run. It
+is the part of the game that could not exist any other way: nobody has ever seen that picture in
+motion, and what the run needs is not the picture but the place inside it.
 
 ## How the world is wired
 
@@ -74,12 +103,13 @@ The interface talks to that layer through `src/orbis/world-bus.ts` — a tiny st
 `world.selectLandscape`) and a snapshot (`useWorld()`). The layer is lazy, so the menu paints first.
 The road grade reads the world's tone from `src/orbis/world-palette.ts`, which samples the live frames.
 
-### The menu is local
+### The menu stages the run
 
-The menu selects and stages — which world, which runner, which landscape — and asks Orbis for
-nothing. It used to generate a world behind itself so there would be one to dive into, and it was
-paying for it: a session is billed whenever it is ready, so the menu was buying frames nobody was
-playing. Pressing Start opens `src/WorldLoader`, which requests the world and waits for it.
+The menu is the staging surface: which world, which runner, which landscape — and nothing is
+generating behind it until the player commits to a run. It used to open a session behind itself so
+there would be a world to dive into, and it was paying for it: a session is billed whenever it is
+ready, so the menu was buying frames nobody was playing. Pressing Start opens `src/WorldLoader`,
+which asks Orbis for the world and waits for it on screen.
 
 That wait is the one real cost of the arrangement, so it is a surface rather than a disabled button.
 The loader names the step Orbis is on — connecting, generating, pinning a landscape, arming — from the
@@ -241,6 +271,19 @@ surge (≈11.6) that decays over 1.8 s into the normal ramp (≈8.4, then climbi
 run's speed rather than a cosmetic effect, so the world's scale, the camera's field of view, the
 road scroll, and the approaching obstacles all read as one launch — and the controls are unchanged.
 
+What the launch does not do is hand the player straight to the content: the field opens on empty road.
+`START_CLEARANCE` in `src/game/pattern-field.ts` is where the first chunk is laid — ~32 m past the
+runner, two escape windows, because the launch surge covers those metres faster than any later ones.
+The field used to start nine metres out, which at the launch's pace is under a second, and a `pair` or
+a wall landing there asks for a lane change the player has not been given the time to read: the first
+thing a fresh run — and a retry, which is the same remount — could teach was that it was unfair. One
+constant covers both starts, and `tools/run-audit.mjs` reads it rather than keeping its own copy, so
+the opening the harness measures is the opening that is played. Measured live with
+`window.__runfield()`: the first hazard row is 27–29 m ahead on the first sampled frame of a fresh run,
+and the same again after the defeat card's *Run again*, with three pips back on the HUD. The opening
+band of the reward curve is quieter as a result — it is where a run is read, not where it is paid —
+while what a token is worth at the line is untouched.
+
 Leaving mirrors arriving: the run pulls back out, the menu reassembles with its own entrance, the
 world is handed back to its wide establishing shot, and it keeps streaming the whole way.
 
@@ -273,8 +316,8 @@ run button, rather than shrinking a fixed-height grid until something falls off 
 
 The run screen is the game, not the machinery. On screen while running: the score, the tokens (with
 the run's ramp), the distance, the hits left, the combo, whatever powerup is running, and the world's
-weather while it is here — the numbers a decision can be made from — plus one Exit button in the
-header. Hidden, with `display:none` and still mounted: the deal's name and terms, the pressure bar,
+weather while it is here — the numbers a decision can be made from — plus a callout when a pickup
+spends itself, and one Exit button in the header. Hidden, with `display:none` and still mounted: the deal's name and terms, the pressure bar,
 the ghost race, the flow meter, the token ramp, the world chip, and the world-answer feed. They stay in
 the DOM because the probes and the dev readouts are built on them (`.hud-contract`, `.hud-flow-fill`,
 `.hud-ghost b`, `.director-card`), so a probe can still read a run's internals that the player no
@@ -435,6 +478,7 @@ props from whatever is in `models/`.
 | `↑` / `W` | Jump |
 | `↓` / `S` | Slide |
 | `Space` | Pause / resume |
+| **Pause** button, top left of the run | Pause / resume — the same toggle as the key |
 
 The same table is in the game, behind **How to play** in the menu's topbar — with the scoring, the
 terms you can run under, the weather, and what happens to a picture you upload — so the player can
@@ -442,12 +486,19 @@ read it without leaving the screen the run starts from. `Space` holds the whole 
 runner — the scene clock, the road's scroll and every CSS animation stop with it (see *What the menu
 shows, and what the run screen keeps*, above).
 
+**Pause is on the screen too**, beside Exit, because a touch device has no Space bar and a run that
+cannot be stopped is a run that has to be finished. It is one toggle shared with the key (not a second
+pause path), it stays visible while the run is paused — the header sits above the overlay — so on a
+phone the same button is the way back into the run, and it is hidden on the run-over card, where the
+card's own actions are the only thing left to press.
+
 ## Sound
 
-Two files in `sounds/` are the game's own sound, sitting beside the world's: a music bed (`bgm.mp3`)
-and a token pickup (`koiroylers-get-coin-351945.mp3`), wired in `src/game/audio.ts` and mixed by hand —
-the bed at 0.45 under the pickup's 0.75, because a run takes tokens by the dozen and the effect is the
-one that is supposed to be noticed.
+Three files in `sounds/` are the game's own sound, sitting beside the world's: a music bed (`bgm.mp3`),
+a token pickup (`koiroylers-get-coin-351945.mp3`) and a powerup pickup (`level-up.mp3`), wired in
+`src/game/audio.ts` and mixed by hand — the bed at 0.45, the token at 0.75 and the powerup at 0.85,
+because a run takes tokens by the dozen and a powerup is the event that changes what the next pattern
+costs.
 
 The bed is a **96 kbps encode of the 256 kbps download it came from**: 1.39 MB instead of 3.72 MB, the
 same 1:56 at 48 kHz joint stereo, which is the difference between the soundtrack costing a third of
@@ -473,16 +524,19 @@ already in flight is abandoned rather than queued, which is what lets a fade-in 
 mute and fade out from wherever it had got to. The pickup is not faded: it is a one-shot a few hundred
 milliseconds long and its level is decided when it plays.
 
-**The pickup is heard as it is scored.** `playCoin` fires from the same `onToken` callback that pays
-the token and fills the HUD, so the sound cannot drift from the token it belongs to. It plays through a
-pool of four voices rather than one element, because restarting a single element cuts the previous
-pickup short and a run can take two tokens inside a second.
+**The pickups are heard as they are scored.** `playCoin` fires from the same `onToken` callback that
+pays the token and fills the HUD, so the sound cannot drift from the token it belongs to; it plays
+through a pool of four voices rather than one element, because restarting a single element cuts the
+previous pickup short and a run can take two tokens inside a second. `playPickup` is the same idea one
+event over — it fires from the `powerup_collected` event the HUD's chip is drawn from — and it is a
+*different file* rather than a pitch-shifted coin on purpose: a shield, a magnet and a double change
+what the run is about to cost, and that has to be audibly not a token.
 
 **What the settings move, and what they do not.** One mute switch and one slider, in the menu and in
 the pause overlay, are the *same* control (`src/game/SoundSettings.tsx` reading one store in
 `src/game/audio.ts`) rather than two that agree by convention — the two surfaces cannot disagree about
 how loud the game is. Both persist under `watchme-run:sound` and are validated on read, so a stale or
-hand-edited value cannot open the page at 400%. What they move is the game's two sounds; Orbis's
+hand-edited value cannot open the page at 400%. What they move is the game's own sounds; Orbis's
 generated soundtrack belongs to the world and is left alone, which is what the panel's own label says
 out loud. The track keeps playing while the game is paused: it is the game's, not the world's, so a
 pause does not have to sound like the end of the run.
@@ -555,7 +609,7 @@ interface because the director is what decides whether an ask is *spent*: an eve
 replaced by a newer one never reached the world, and reporting it as a cause would be a lie about what
 the player is looking at. The menu's opening shot and the run's launch carry no cause, for the same
 reason — they are not answers to anything the player did. Measured live: the feed is empty at the line,
-holds one entry after nine seconds (one ask spent — one prompt per chunk, on an 1.8 s cooldown), and
+holds one entry after nine seconds (one ask spent — one prompt per boundary, on a 1.8 s cooldown), and
 empties again the moment a new run starts.
 
 ## Three things worth picking up
@@ -591,9 +645,21 @@ reported against the curve's own value at each collection distance: every double
 twice it, every plain token exactly once it, worst difference 0.
 
 **A shield is taken before `damage` moves.** It is checked in the collision branch the hit lands in, so
-the stumble, the impact shake and the world's answer are the same as any other hit — what changes is
-that no pip is spent, the combo survives, and the simulation publishes `powerup_spent` instead of
-`damage_taken`. Measured: shield collected at 398 m with damage 0, spent at 427 m with damage still 0.
+the stumble and the world's answer are the same as any other hit — what changes is that no pip is
+spent, the combo survives, the frame flashes the pickup's own colour instead of the damage red
+(`--absorb`; the red flash is the game saying a hit landed, and this is the hit that did not), and the
+simulation publishes `powerup_spent` instead of `damage_taken`. Measured: shield collected at 398 m
+with damage 0, spent at 427 m with damage still 0.
+
+**A spend is said out loud** — `.run-callout`, under the top strip, in the pickup's own colour. The
+chip in the HUD is the *state*; this is the moment it changed, and a state whose only sign is an
+absence is the one thing a player cannot be asked to notice at speed — a magnet's clock running out
+looks exactly the same. The words come from the same `describeAnswer` the world's feed uses, so the
+card and the feed cannot drift apart, and the card's timer waits while the run is paused, because a
+pause is a player who has stopped to look. Measured by `tools/pickup-probe.mjs`, which now fails the
+run if the callout is missing, unreadable, or if the frame pulses the damage red for a hit a shield
+absorbed: the card reads `SHIELD SPENT — it took the hit for you` at the moment the shield disappears,
+with `--absorb` reading 1.00 while `--hit` reads 0.00 and the damage stays where it was.
 
 **The HUD wears the pickup's own colour** (`.hud-pickup`, one border and one word per verb), counts the
 two clocks down, and reserves nothing: a run with no pickups running draws exactly the row it drew
@@ -626,7 +692,9 @@ against the simulation's own numbers rather than against a screenshot.
 Every world already promised one. The menu card sells the desert as *Sandstorm*, the city as
 *Blackout*, the forest as *Fog*, and the pressure meter on the HUD is named for it — and nothing in the
 run ever did it. The hazard is that promise made playable, and the reason to play a second world: each
-one attacks a different channel.
+one attacks a different channel. It is also where the generated world stops being scenery: the same
+event that changes the rules of the run is the event Orbis is asked to draw, and the player is looking
+at the answer while it is happening to them.
 
 | world | hazard | what it attacks |
 | --- | --- | --- |
@@ -954,6 +1022,11 @@ noticed it should because a `state` message happened to re-run the arming effect
 an explicit retry (`ARM_RETRY_MS`) rather than an accident of message timing, which also closes the case
 where an arm that *failed* would clear the pin without ever applying the picture.
 
+Re-measured end to end through the real upload control: a 900×500 picture with its horizon at 0.72 is
+scanned at **0.7292**, prepared to **0.4167** in one crop and staged with Start enabled; the run's own
+arming pins it (stage 2 on the loader), and the bus reports `has_image: true` at 1080p for the whole
+run, with `sourceHorizon 0.7292` and a seed derived from the pixels.
+
 Because the world is grown *from* the picture, the prompts change with it: a landscape the player
 supplied is described as "the exact landscape supplied as the starting frame… the same terrain, the
 same colours, the same light… carried forward", never as a named world, since naming one would fight
@@ -970,8 +1043,8 @@ step Orbis is on:
 - `Generating your world` — WebRTC negotiated and the conditions sent; usually 15-25 s to the first frame
 - `Pinning your landscape` — only when the player supplied one: `reset`, the image, then the seed
 - `Arming the run` — the delivery tier read from the offered list, then `start`, then the hand-over
-- `Local world mode` — no live world. At 55 s the wait is given up and the run starts anyway (20 s once
-  Orbis has reported an error), and the chip in the run carries the real error and a retry
+- `World link offline` — no live world yet. At 55 s the wait is given up and the run starts anyway
+  (20 s once Orbis has reported an error), and the chip in the run carries the real error and a retry
 
 The menu's chip says something different on purpose — `World starts with your run` — because before a
 run nothing has been asked for, and "Loading world engine" there would be a promise the menu is not
@@ -979,7 +1052,7 @@ keeping. The menu's backdrop is the local per-world gradient (`data-world` follo
 
 The chip never shows an SDK string. A transport symptom on a link that was live reads "World link
 interrupted — reconnecting", because the recovery effect is already retrying it; the same symptom on a
-link that never came up reads "Couldn't reach the Orbis world — the run plays in local world mode",
+link that never came up reads "Couldn't reach the Orbis world — the run plays over the local backdrop",
 because nothing is retrying that one. `[orbis] connect failed` in the console keeps the raw diagnosis
 for whoever is debugging.
 
@@ -1020,20 +1093,22 @@ silently does nothing while chunks keep being paid for, which is exactly what a 
 
 One thing to know if you change the director: Orbis reads the prompt that is in force when a chunk
 *starts*, so a second prompt inside the same chunk is thrown away unread. The director subscribes to
-`chunk_complete` and spends at most one ask per chunk, holding the rest for the next boundary — a run
-measured 7 asks across 7 chunks with none overwritten, where the version without the gate spent 6 asks
-on 5 chunks and lost one.
+`chunk_complete` and spends at most one ask per boundary, holding the rest for the next one. The single
+exception is deliberate: a priority ask that has waited `PRIORITY_WAIT_MS` (3.2 s) takes the current
+chunk anyway, because the alternative is a crash steering the world five seconds later — the journal
+marks those entries `deadline: true`. A run measured 7 asks across 7 chunks with none overwritten,
+where the version without the gate spent 6 asks on 5 chunks and lost one.
 
 The account allows **one concurrent Orbis session per model**, so the app holds one and recycles it:
-it disconnects on `pagehide`, and lets the session go **60 s** after a run ends — the menu is local, so
-an open session there is one nobody is watching, and the grace window is only there so that going
-straight back into another run skips the loading screen. While the menu is up the world layer is hidden
+it disconnects on `pagehide`, and lets the session go **60 s** after a run ends — the menu is a
+staging surface, so an open session there is one nobody is watching, and the grace window is only
+there so that going straight back into another run skips the loading screen. While the menu is up the world layer is hidden
 (`html[data-surface="menu"]`) and the recovery effect is gated on a run being on screen, so a blip in
 the menu cannot connect a world the player did not ask for. It retries with the reason on screen while
 a closed session is still releasing its slot. Gameplay never waits for it — the runner is fully
-playable in local world mode.
+playable over the local backdrop.
 
-A drop *during* a run is the case that used to end quietly in local world mode, and it is worth being
+A drop *during* a run is the case that used to end quietly over the local backdrop, and it is worth being
 precise about why. The recovery effect reconnects the link, and the SDK hands back a session with
 nothing armed on it — no prompt, no image, no running generation — so someone has to arm it again, and
 the app's only `start()` is the arming pass. That pass returned early whenever a run was on screen:
@@ -1043,7 +1118,7 @@ they are already running through, so the guard earns its keep. The exception is 
 session that dropped — which is precisely what an empty `applied` under a live run means, since
 `applied` is cleared the moment the link leaves `ready`. Without that exception a recovered link comes
 back connected and silent: the video re-attaches, generation never restarts, and the run finishes in
-local world mode with the world reachable the whole time.
+the local backdrop with the world reachable the whole time.
 
 Measured with the link dropped under a live run (`tools/drop-probe.mjs`): `disconnected` 3 s later
 with the video element unmounted and the run still playing, `ready` at 31 s, the re-arm reaching
@@ -1209,7 +1284,7 @@ house. Every panel is 16:9, because the picture is a frame of the generated worl
 would letterbox or stretch it, and every panel faces straight down the road — a panel on a piece with
 a random yaw would face away from the runner, and the picture is the point of it. Panels are unlit
 (`toneMapped: false`) so they read as signage in any world's light. When there is no world to show —
-the first seconds of a run, or any run in local world mode — they carry `createPosterArt`'s abstract
+the first seconds of a run, or any run over the local backdrop — they carry `createPosterArt`'s abstract
 panel for that world, because a lit panel with nothing on it is a black rectangle.
 
 Verified on headless runs in all three worlds, from `window.__roadside()`: 105 pieces in 16 kinds and
@@ -1289,7 +1364,7 @@ needs. Read off the installed type declarations, not from memory:
 | Message | What it does here |
 | --- | --- |
 | `state` | published on the bus as the session snapshot; every command is gated on it |
-| `chunk_complete` | the world's real cadence; one ask per chunk, and the chunk each ask went out in is journaled |
+| `chunk_complete` | the world's real cadence; one ask per boundary, and the chunk each ask went out in is journaled. A priority ask past its 3.2 s deadline lands mid-chunk and is marked `deadline: true` |
 | `command_error` | classified rather than surfaced raw — "already generating" after a `start` is the expected answer, and an audio refusal is remembered so a deployment without an audio track is asked once |
 | `image_accepted` | logged with the decoded size, which is how the prepared frame is confirmed to have arrived at 1280×720 |
 
@@ -1325,13 +1400,22 @@ Measured on the desert, at the spot in front of the runner:
 load, then the run — and prints the chip, the video element state, the layout of the world layer,
 Reactor network responses, console output, and the grade. It asserts the two claims of this build on
 the way: that the menu is *local* (no session started, no video element, the world layer at opacity 0)
-and that the loader reached an armed world rather than giving up into local world mode. It follows the
+and that the loader reached an armed world rather than giving up into the local backdrop. It follows the
 loader by its own stages, and measures the dive from where it now begins — the first frame after the
 loading surface leaves — so a cold run is reported as a slow load rather than a run that never ran:
 
 ```bash
 node tools/orbis-probe.mjs http://localhost:5173/ 45 "$TEMP/watchme-run.png"
 ```
+
+On this build the probe's audit run measured: the menu **local** (status `disconnected`, no `<video>`
+element, layer opacity 0, no session asked for); the loader **armed in 24 s** (23–26 s across three cold
+starts, 45 s on the day's first); the session at **1080p with its own sound on** and `started: true`;
+**9 asks with nothing doubled outside the priority deadline** — the two mid-chunk sends the deadline
+makes are listed with a `deadline` flag, not counted as faults; the pause **holding the chunk counter
+still** (3 → 3 across the paused window) at **0.0 luma of change against a running control of 8.1**,
+with the media clock still advancing — which is why the counter decides it and the clock cannot; and
+**0 run prompts after Exit**.
 
 It also writes frames for judging the composition without viewing the image:
 
@@ -1347,8 +1431,10 @@ Every prompt the app asks for is journaled at the ask, with its reason, the worl
 (`video` / `audio`), the chunk it went out in, and the outcome — readable in a headless pass at
 `window.__orbisPrompts`, which is how the per-world intros are verified exactly (one `launch` per
 dive, accepted, nothing else steering the world), how "nothing steers the world after Exit" is proved
-rather than assumed, and how "one ask per chunk" is arithmetic on a real run rather than a claim about
-the code. The live session snapshot is published the same way at `window.__orbisWorld`, and the pause
+rather than assumed, and how "one ask per boundary" is arithmetic on a real run rather than a claim
+about the code — with the one sanctioned exception, the priority deadline's mid-chunk ask, marked in
+the entry (`deadline: true`) and counted separately from a chunk that took two unsanctioned asks.
+The live session snapshot is published the same way at `window.__orbisWorld`, and the pause
 reconciler's own trace — what it wanted, what it asked for, and what the model answered for every
 pause and resume — at `window.__orbisTrace` (the probe prints its counts and a tail as `pause trace:`).
 The trace exists because the console is not evidence: the CDP console stream drops lines under load,
@@ -1358,10 +1444,21 @@ the question a dropped line would answer wrong.
 `LANDSCAPE=1 node tools/orbis-probe.mjs … 20` builds a picture in the page with its horizon
 deliberately low (`LANDSCAPE_HORIZON=0.72` by default), hands it to the real upload control, then
 measures the prepared frame with its own row scan and reports that the choice is *staged*: the pin
-itself happens at run entry, which the loader's second stage is the record of. It also
-reports the world's sound state and, between two samples of the raw `<video>` 2.5 s apart, whether the
-world actually stops when the run is paused — the media clock is not evidence either way, since a live
-track keeps its element's clock advancing whether or not frames arrive.
+itself happens at run entry, which the loader's second stage is the record of. Measured end to end on
+this build: a 900×500 upload with its horizon at 0.72 is scanned at **0.7292**, prepared to **0.4167**
+— the game's own line — in one crop (step 95, preview 384×216) and staged with Start enabled; the pin
+rides the run-entry arming (loader stage 2, *"Placing probe-landscape on the horizon line and growing
+the world from it"*), the world is armed in **31 s** with `has_image: true` through the run, the HUD
+reads `desert / probe-landscape`, every prompt says *the supplied landscape* instead of naming a world,
+and the pause check still holds on the pinned world (chunks 3 → 3, 0.0 luma against a control of 2.8).
+
+The probe's pause check waits for the pause that was *asked for* to reach the model, rather than for
+any `paused` state: `pauseRequested` plus `paused`/not-running plus a chunk index that has held still
+across two samples — a rest between chunks reads as `paused` too, and breaking on that reported the
+world as paused before the model had answered. It then settles five seconds and samples two frames of
+the raw `<video>` 2.5 s apart, with a running control taken first by the same code (retaken once if it
+lands in a rest). The media clock is not evidence either way, since a live track keeps its element's
+clock advancing whether or not frames arrive.
 
 `tools/roadside-probe.mjs` drives one run per world and asks the two questions the roadside can be
 asked. What is beside the road comes from `window.__roadside()`: pieces per kind, panels, how far the
