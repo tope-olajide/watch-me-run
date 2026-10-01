@@ -4,6 +4,7 @@ import { characterCatalog } from "./game/character-catalog";
 import type { Environment } from "./game/run-state";
 import { roadsideModels } from "./game/roadside-models";
 import { worldById } from "./game/worlds";
+import { ORBIS_DISABLED } from "./orbis/orbis-switch";
 import { useWorld, world, type WorldSnapshot } from "./orbis/world-bus";
 
 /**
@@ -88,6 +89,9 @@ const STAGES = [
 
 /** Which step the session is on, from what Orbis reports. `STAGES.length` means every step is done. */
 function stageIndex(state: WorldSnapshot, framesGivenUp: boolean): number {
+  // No world to wait for while Orbis is paused for testing (see `orbis-switch.ts`): every step is
+  // already behind us.
+  if (ORBIS_DISABLED) return STAGES.length;
   if (state.pinning) return 2;
   if (state.status === "ready") {
     if (!state.session.started) return 3;
@@ -101,6 +105,7 @@ function stageIndex(state: WorldSnapshot, framesGivenUp: boolean): number {
 
 /** What the step is doing, in the player's terms rather than the SDK's. */
 function stageLine(state: WorldSnapshot, stage: number): string {
+  if (ORBIS_DISABLED) return "Orbis is paused for gameplay testing — this run plays on the local world.";
   if (state.error) return state.error;
   switch (stage) {
     case 0:
@@ -143,7 +148,9 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
    * it is here rather than in the menu: the request *is* the loading screen's reason to exist.
    */
   useEffect(() => {
-    world.showWorld(environment);
+    // While Orbis is paused for testing there is no world to ask for (see `orbis-switch.ts`); the run
+    // still warms its scenery and its runner, and then starts on the local backdrop.
+    if (!ORBIS_DISABLED) world.showWorld(environment);
   }, [environment]);
 
   /**
@@ -221,12 +228,13 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
   // still being pinned into it, and its first frames are on their way to the screen. The wait is
   // measured from the Start press rather than from this mount, so a second run inside the grace window
   // is instant instead of paying the minimum twice.
-  const armed =
-    state.status === "ready" &&
-    state.session.started &&
-    !state.pinning &&
-    (streaming || framesGaveUp) &&
-    characterLoaded;
+  const armed = ORBIS_DISABLED
+    ? characterLoaded
+    : state.status === "ready" &&
+      state.session.started &&
+      !state.pinning &&
+      (streaming || framesGaveUp) &&
+      characterLoaded;
 
   useEffect(() => {
     if (reported.current || (!armed && !timedOut)) return;
@@ -253,7 +261,7 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
       aria-live="polite"
     >
       <div className="loader-core">
-        <span className="eyebrow">Orbis · live world engine</span>
+        <span className="eyebrow">{ORBIS_DISABLED ? "Local world · gameplay test" : "Orbis · live world engine"}</span>
         <h1 className="loader-title">{selected.label}</h1>
         <p className="loader-line">{timedOut && !armed ? "Orbis is taking longer than usual — starting in local world mode. The world will join when it can." : stageLine(state, stage)}</p>
 
@@ -275,7 +283,11 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
 
         <div className="loader-meta">
           <span>{seconds}s elapsed</span>
-          <span>{state.session.resolution ?? "1080p"} · {live ? "streaming" : "priming"}</span>
+          <span>
+            {ORBIS_DISABLED
+              ? "local backdrop"
+              : `${state.session.resolution ?? "1080p"} · ${live ? "streaming" : "priming"}`}
+          </span>
         </div>
 
         {character && (

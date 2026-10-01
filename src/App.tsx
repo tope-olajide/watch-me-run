@@ -5,6 +5,8 @@ import type { CharacterId } from "./game/character-catalog";
 import { characterCatalog } from "./game/character-catalog";
 import type { Environment } from "./game/run-state";
 import { worldById } from "./game/worlds";
+import LocalWorld from "./orbis/LocalWorld";
+import { ORBIS_DISABLED } from "./orbis/orbis-switch";
 import { launchPrompt, openingPrompt } from "./orbis/prompts";
 import { world } from "./orbis/world-bus";
 
@@ -166,10 +168,18 @@ export default function App() {
         The generated world lives above the interface, below everything else, and is mounted once
         for the whole visit: the menu generates a world, a run continues inside that same stream,
         and coming back does not cut it.
+
+        While Orbis is paused for gameplay testing (see `src/orbis/orbis-switch.ts`) the layer is not
+        mounted at all — the local backdrop takes its place — so the Reactor SDK is never fetched
+        and no session can be created. Flipping the flag back restores this block unchanged.
       */}
-      <Suspense fallback={null}>
-        <WorldLayer />
-      </Suspense>
+      {ORBIS_DISABLED ? (
+        <LocalWorld />
+      ) : (
+        <Suspense fallback={null}>
+          <WorldLayer />
+        </Suspense>
+      )}
 
       {/*
         The wait for the world, on top of the menu it was started from: the menu behind is already

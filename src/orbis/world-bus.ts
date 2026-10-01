@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { ReactorStatus } from "@reactor-team/js-sdk";
 import type { Environment } from "../game/run-state";
 import type { PreparedLandscape } from "./landscape";
+import { ORBIS_DISABLED, ORBIS_DISABLED_NOTE } from "./orbis-switch";
 import { recordPrompt, type PromptChannel, type PromptReason } from "./prompt-journal";
 import type { WorldView } from "./prompts";
 
@@ -161,6 +162,9 @@ export function useWorld(): WorldSnapshot {
 
 /** One place for the status copy the menu and the run both show. */
 export function worldLabel(snapshot: WorldSnapshot): string {
+  // The switch's copy wins while Orbis is paused for testing: there is no session to wake and no
+  // error to explain, and either of the labels below would be a promise nothing is keeping.
+  if (ORBIS_DISABLED) return ORBIS_DISABLED_NOTE;
   if (snapshot.error) return "Local world mode";
   switch (snapshot.status) {
     case "idle":
@@ -272,6 +276,7 @@ export function subscribeChunks(listener: (tick: ChunkTick) => void): () => void
  * to the couple of minutes a world can stay warm after one.
  */
 export function menuWorldLabel(snapshot: WorldSnapshot): string {
+  if (ORBIS_DISABLED) return ORBIS_DISABLED_NOTE;
   return snapshot.status === "ready" || snapshot.status === "waiting" || snapshot.status === "connecting"
     ? worldLabel(snapshot)
     : "World starts with your run";
