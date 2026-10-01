@@ -2,11 +2,88 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { ChangeEvent } from "react";
 import type { CharacterId } from "./game/character-catalog";
 import { characterCatalog } from "./game/character-catalog";
+import SoundSettings from "./game/SoundSettings";
 import type { Environment } from "./game/run-state";
+import { readRecords } from "./game/records";
 import { readWorldChoice, rememberWorldChoice, worlds } from "./game/worlds";
+import {
+  CONTRACTS,
+  readContract,
+  readUnlockedDeals,
+  rememberContract,
+  unlockDeal,
+  type Contract,
+} from "./game/contracts";
+import { readBank } from "./game/bank";
 import { LandscapeError, landscapeNote, prepareLandscape } from "./orbis/landscape";
 import { clearLandscapeFile, loadLandscapeFile, saveLandscapeFile } from "./orbis/landscape-store";
 import { menuWorldLabel, useWorld, world, worldTone } from "./orbis/world-bus";
+
+/**
+ * The deals on the table, and the bank that unlocks them.
+ *
+ * The picker inside a run can only *choose* a deal, because a run is the wrong place to be making a
+ * purchase: the player is mid-decision, the card is already up, and a price with a balance under it
+ * would turn a run into a shop. So the buying lives here, on the screen every run starts from — and it
+ * is the reason a run's tokens mean anything after the card: the deals that pay the most are the ones
+ * that have to be unlocked, and the only way to get them is to run for them.
+ */
+function DealsRow({
+  current,
+  unlocked,
+  bank,
+  onPick,
+  onUnlock,
+}: {
+  current: Contract;
+  unlocked: string[];
+  bank: number;
+  onPick: (deal: Contract) => void;
+  onUnlock: (deal: Contract) => void;
+}) {
+  return (
+    <div className="menu-deals" role="group" aria-label="Terms">
+      <span className="menu-deals-label">
+        Terms · <b>{bank}</b> tokens banked
+      </span>
+      <div className="menu-deal-cards">
+        {CONTRACTS.map((deal) => {
+          const locked = deal.cost > 0 && !unlocked.includes(deal.id);
+          return (
+            <div key={deal.id} className="menu-deal" data-deal={deal.id} data-locked={locked ? "true" : "false"}>
+              <button
+                type="button"
+                className="menu-deal-pick"
+                data-selected={deal.id === current.id ? "true" : "false"}
+                disabled={locked}
+                title={deal.rule}
+                onClick={() => onPick(deal)}
+              >
+                <b>{deal.name}</b>
+                <small>{locked ? `${deal.cost} tokens to unlock` : deal.terms}</small>
+              </button>
+              {locked && (
+                <button
+                  type="button"
+                  className="menu-deal-unlock"
+                  disabled={bank < deal.cost}
+                  title={
+                    bank < deal.cost
+                      ? `Needs ${deal.cost - bank} more banked tokens`
+                      : `Pay ${deal.cost} banked tokens`
+                  }
+                  onClick={() => onUnlock(deal)}
+                >
+                  unlock · {deal.cost}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const CharacterPreview = lazy(() => import("./game/CharacterPreview"));
 
@@ -24,6 +101,30 @@ export default function MenuExperience({ onStart, entering = false, returning = 
   const [characterId, setCharacterId] = useState<CharacterId>("amy");
   const [preparing, setPreparing] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
+  /**
+   * The best run in each world, read once when the menu mounts.
+   *
+   * Read here rather than after a run because the menu is remounted on the way back from one (`App`
+   * swaps the surfaces), so a fresh mount is exactly when the records can have changed.
+   */
+  const [records] = useState(() => readRecords());
+  /**
+   * The deal and the bank, read the same way and for the same reason as the records: the menu is
+   * remounted on the way back from a run, so a fresh mount is when both can have changed.
+   */
+  const [contract, setContract] = useState<Contract>(() => readContract());
+  const [unlocked, setUnlocked] = useState<string[]>(() => readUnlockedDeals());
+  const [bank, setBank] = useState(() => readBank());
+  const [dealNote, setDealNote] = useState<string>();
+  /**
+   * The instructions, on demand.
+   *
+   * The menu used to carry the controls as a line under the Start button and the game's premise as a
+   * paragraph beside the title. Both are the game explaining itself to someone who has already
+   * decided to play, and both pushed the controls a player actually needs — Start, and the sound —
+   * down the page. They live behind one button now.
+   */
+  const [helpOpen, setHelpOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const worldState = useWorld();
   const landscape = worldState.landscape;
@@ -48,6 +149,46 @@ export default function MenuExperience({ onStart, entering = false, returning = 
     world.select(environment);
     rememberWorldChoice(environment);
   }, [environment]);
+
+  useEffect(() => {
+    if (!helpOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHelpOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [helpOpen]);
+
+  /**
+   * Choosing a deal, and buying one.
+   *
+   * A purchase is reported in the same place the choice is made rather than in an alert: the balance
+   * moves under the label, the chip stops saying "locked", and a refusal says what it needs instead of
+   * failing silently. Buying also *takes* the deal — a player who has just paid for Glass cannon has
+   * already decided to run it.
+   */
+  const pickDeal = useCallback(
+    (deal: Contract) => {
+      if (deal.cost > 0 && !unlocked.includes(deal.id)) return;
+      setContract(deal);
+      rememberContract(deal.id);
+      setDealNote(undefined);
+    },
+    [unlocked],
+  );
+
+  const buyDeal = useCallback((deal: Contract) => {
+    const bought = unlockDeal(deal.id);
+    if (!bought.ok) {
+      setDealNote(`${deal.name} costs ${deal.cost} banked tokens — this run has not paid for it yet.`);
+      return;
+    }
+    setBank(bought.balance);
+    setUnlocked(readUnlockedDeals());
+    setContract(deal);
+    rememberContract(deal.id);
+    setDealNote(`${deal.name} unlocked — ${bought.cost} tokens spent. It is what you will run.`);
+  }, []);
 
   /**
    * Preparing a picture is pure canvas work in the page, so the menu can show the player the exact
@@ -129,54 +270,72 @@ export default function MenuExperience({ onStart, entering = false, returning = 
         <span className="menu-grid" />
       </div>
 
+      {/*
+        One bar, everything a player needs before a run: the name, the world's state, the sound, and
+        the instructions. The controls used to be a line at the bottom of the page and the sound a
+        panel under it, which meant neither was on screen until the player scrolled — see
+        `.start-dock` for the other half of that fix.
+      */}
       <header className="menu-topbar">
         <span className="menu-wordmark">
-          WATCHME<span>RUN</span>
+          Watch<span>.</span>Me<span>.</span>Run
         </span>
-        <button
-          className={`engine-chip engine-${tone}`}
-          type="button"
-          onClick={() => tone === "local" && world.retry()}
-          data-world-status={worldState.status}
-          data-world-video={worldState.videoState}
-        >
-          <span className="engine-dot" />
-          {menuWorldLabel(worldState)}
-        </button>
+        <div className="menu-tools">
+          <button
+            className={`engine-chip engine-${tone}`}
+            type="button"
+            onClick={() => tone === "local" && world.retry()}
+            data-world-status={worldState.status}
+            data-world-video={worldState.videoState}
+          >
+            <span className="engine-dot" />
+            {menuWorldLabel(worldState)}
+          </button>
+          <SoundSettings compact />
+          <button className="menu-help" type="button" onClick={() => setHelpOpen(true)}>
+            How to play
+          </button>
+        </div>
       </header>
 
       <section className="menu-layout">
-        <div className="menu-intro">
-          <span className="eyebrow">Live world runner / Orbis</span>
-          <h1 className="menu-title">
-            RUN THE
-            <br />
-            WORLD INTO
-            <br />
-            <em>BEING</em><span className="menu-dot">.</span>
-          </h1>
-          <p className="menu-lede">
-            Pick a world and a runner, then go. Orbis generates the world around you while you
-            run, and it answers how you play — every near miss, stumble, and sprint changes what
-            the world does next.
-          </p>
-          <ul className="menu-facts">
-            <li><b>03</b> Worlds</li>
-            <li><b>1080p</b> Generated live</li>
-            <li><b>1</b> Continuous shot</li>
-          </ul>
+        {/* The world, and the terms under it: both are decisions about the same run. */}
+        <div className="menu-column menu-column-worlds">
+          <span className="menu-label">World</span>
+          {worlds.map((item) => (
+            <button
+              key={item.id}
+              className={`world-card world-${item.id} ${item.id === environment ? "selected" : ""}`}
+              onClick={() => setEnvironment(item.id)}
+              aria-pressed={item.id === environment}
+              type="button"
+            >
+              <span className="world-index">{item.index}</span>
+              <span className="world-copy">
+                <strong>{item.label}</strong>
+                {/* A run that can be lost is worth a target, and the target has to be on the card the
+                    player picks rather than behind a menu: this is the whole point of the record. */}
+                {records[item.id] && (
+                  <span className="world-best">
+                    Best {records[item.id]?.score.toLocaleString()} · {records[item.id]?.distance}m
+                  </span>
+                )}
+              </span>
+              <span className="world-arrow">↗</span>
+            </button>
+          ))}
+          <DealsRow current={contract} unlocked={unlocked} bank={bank} onPick={pickDeal} onUnlock={buyDeal} />
+          {dealNote && <p className="menu-note">{dealNote}</p>}
         </div>
 
+        {/* The runner, on the stage they are picked from. The frame takes whatever height the row has
+            left, which is what keeps the whole menu on one screen. */}
         <div className="menu-stage">
           <div className="stage-frame">
             <Suspense fallback={<div className="stage-loading">Loading runner…</div>}>
               <CharacterPreview characterId={characterId} />
             </Suspense>
             <span className="stage-world">{selected.label}</span>
-          </div>
-          <div className="stage-caption">
-            <strong>{character?.label ?? "Runner"}</strong>
-            <small>run · jump · slide · stumble</small>
           </div>
           <div className="runner-rail">
             {characterCatalog.map((item, index) => (
@@ -194,43 +353,12 @@ export default function MenuExperience({ onStart, entering = false, returning = 
           </div>
         </div>
 
-        <div className="menu-worlds">
-          <div className="section-heading">
-            <span className="eyebrow">Choose your world</span>
-            <span className="heading-note">Generated when you start</span>
-          </div>
-          {worlds.map((item) => (
-            <button
-              key={item.id}
-              className={`world-card world-${item.id} ${item.id === environment ? "selected" : ""}`}
-              onClick={() => setEnvironment(item.id)}
-              aria-pressed={item.id === environment}
-              type="button"
-            >
-              <span className="world-index">{item.index}</span>
-              <span className="world-copy">
-                <strong>{item.label}</strong>
-                <small>{item.tagline}</small>
-                <span className="world-hazards">
-                  {item.hazards.map((hazard) => (
-                    <i key={hazard}>{hazard}</i>
-                  ))}
-                </span>
-              </span>
-              <span className="world-arrow">↗</span>
-            </button>
-          ))}
-          {/*
-            The landscape is optional and sits with the world cards because it is the same kind of
-            choice: which place this is. It replaces the world's scenery, not the world — the card
-            above it still decides the pacing, the obstacles and the road.
-          */}
+        {/* The picture, when the player has one: the same kind of choice as the world, one column
+            over. The long explanation of what happens to an uploaded horizon lives in the
+            instructions now. */}
+        <div className="menu-column menu-column-picture">
+          <span className="menu-label">Your picture</span>
           <div className="landscape-block" data-state={preparing ? "preparing" : landscape ? "ready" : "empty"}>
-            <div className="section-heading">
-              <span className="eyebrow">Run in your own picture</span>
-              <span className="heading-note">{landscape ? "Pinned when you start" : "Optional"}</span>
-            </div>
-
             {landscape ? (
               <div
                 className="landscape-card"
@@ -261,7 +389,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
                 type="button"
               >
                 <span className="landscape-icon">{preparing ? "···" : "＋"}</span>
-                <span>{preparing ? "Measuring your picture…" : "Upload an image to run inside"}</span>
+                <span>{preparing ? "Measuring your picture…" : "Run in your own picture"}</span>
               </button>
             )}
 
@@ -273,93 +401,119 @@ export default function MenuExperience({ onStart, entering = false, returning = 
               onChange={pickLandscape}
               aria-label="Landscape image"
             />
-
-            {/*
-              Which world the picture is run in, asked here rather than left to the cards above.
-
-              A picture replaces a world's scenery, not the world: the pacing, the obstacles, the
-              road and the roadside still come from these three. That makes the world a real second
-              half of the upload — the picture is where, the world is how it plays — so the question
-              is asked at the moment the picture is chosen, and the answer moves the picked card
-              above with it. It appears only once there is a picture to run in.
-            */}
-            {landscape && (
-              <div className="landscape-worlds" role="group" aria-label="Where do you want to run?">
-                <span className="landscape-worlds-label">Where do you want to run?</span>
-                <div className="landscape-world-cards">
-                  {worlds.map((item) => (
-                    <button
-                      key={item.id}
-                      className={`world-pick world-${item.id} ${item.id === environment ? "selected" : ""}`}
-                      onClick={() => setEnvironment(item.id)}
-                      aria-pressed={item.id === environment}
-                      type="button"
-                    >
-                      <span className="world-index">{item.index}</span>
-                      <span className="world-pick-name">{item.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {landscape ? (
-              <p className="landscape-hint">
-                Its horizon is placed on the game's horizon line, so you run on its ground and under
-                its sky. It is pinned into the world when you start, not here.
-              </p>
-            ) : (
-              <p className="landscape-hint">
-                Any photo works. We measure its horizon and put it where the game's ground meets its
-                sky. Pictures without people in them work best — the runner should be the only one on
-                screen.
-              </p>
-            )}
-            {uploadError && <p className="menu-note">{uploadError}</p>}
           </div>
 
-          <button
-            className="start-button"
-            onClick={() => onStart(environment, characterId)}
-            disabled={entering}
-            type="button"
-          >
-            <span>{`Start ${landscape ? `${landscape.label} run` : `${selected.label} run`}`}</span>
-            <b>→</b>
-          </button>
-          <p className="menu-controls">← → lanes · ↑ jump · ↓ slide · space pause</p>
+          {uploadError && <p className="menu-note">{uploadError}</p>}
           {worldState.error && <p className="menu-note">World link: {worldState.error}</p>}
-          {/* The scenery packs are CC-BY-4.0, which asks for the author to be credited where the work
-              is shown. This is that credit, in the one screen every run starts from. */}
-          <p className="menu-credits">
-            Scenery packs (CC-BY-4.0):{" "}
-            <a
-              href="https://sketchfab.com/3d-models/low-poly-trees-flowers-and-grass-442904f26b87407d98871b50b49c4169"
-              target="_blank"
-              rel="noreferrer"
-            >
-              trees
-            </a>{" "}
-            by Márcio Meireles,{" "}
-            <a
-              href="https://sketchfab.com/3d-models/desert-rock-fixed-pack-00c4468f1bca48509d7d2bd66b564cbc"
-              target="_blank"
-              rel="noreferrer"
-            >
-              rocks
-            </a>{" "}
-            by Erroratten,{" "}
-            <a
-              href="https://sketchfab.com/3d-models/lowpoly-city-street-pack-buildings-stylized-8e1ba8a437c4460eaaa643953eaf79d0"
-              target="_blank"
-              rel="noreferrer"
-            >
-              city
-            </a>{" "}
-            by haykel-shaba.
-          </p>
         </div>
       </section>
+
+      {/* The run starts here, and it is on screen no matter how tall the columns above it grow. */}
+      <div className="start-dock">
+        <span className="start-summary">
+          {selected.label} · {character?.label ?? "Runner"}
+          {landscape ? ` · ${landscape.label}` : ""}
+        </span>
+        <button
+          className="start-button"
+          onClick={() => onStart(environment, characterId)}
+          disabled={entering}
+          type="button"
+        >
+          <span>START RUN</span>
+          <b>→</b>
+        </button>
+      </div>
+
+      {helpOpen && (
+        <div
+          className="menu-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="How to play"
+          onClick={() => setHelpOpen(false)}
+        >
+          <div className="menu-modal-card" onClick={(event) => event.stopPropagation()}>
+            <header className="menu-modal-head">
+              <span className="menu-label">How to play</span>
+              <button
+                className="menu-modal-close"
+                type="button"
+                onClick={() => setHelpOpen(false)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="menu-modal-body">
+              <section>
+                <h3>Controls</h3>
+                <p>
+                  <b>←</b> <b>→</b> or <b>A</b> <b>D</b> — change lane · <b>↑</b> or <b>W</b> — jump ·{" "}
+                  <b>↓</b> or <b>S</b> — slide · <b>Space</b> — pause
+                </p>
+              </section>
+              <section>
+                <h3>The run</h3>
+                <p>
+                  Run as far as you can. Your deal gives you a few hits — three, unless you took harder
+                  terms — and a hit costs one. When they are gone the run is over.
+                </p>
+              </section>
+              <section>
+                <h3>Score</h3>
+                <p>
+                  Distance pays, and so does danger: near misses and gaps threaded between two obstacles
+                  pay far more and build flow. Tokens pay points and bank up to unlock the harder deals.
+                </p>
+              </section>
+              <section>
+                <h3>Weather</h3>
+                <p>
+                  Every world brings its own: the desert sends a sandstorm that shoves you a lane, the
+                  city blacks out, the forest closes in with fog.
+                </p>
+              </section>
+              <section>
+                <h3>Your picture</h3>
+                <p>
+                  Upload an image and run inside it. Its horizon is placed on the game's, so you run on
+                  its ground under its sky.
+                </p>
+              </section>
+            </div>
+            {/* The scenery packs are CC-BY-4.0, which asks for the author to be credited where the work
+                is shown. This is that credit, on the screen every run starts from. */}
+            <footer className="menu-credits">
+              Scenery packs (CC-BY-4.0):{" "}
+              <a
+                href="https://sketchfab.com/3d-models/low-poly-trees-flowers-and-grass-442904f26b87407d98871b50b49c4169"
+                target="_blank"
+                rel="noreferrer"
+              >
+                trees
+              </a>{" "}
+              by Márcio Meireles,{" "}
+              <a
+                href="https://sketchfab.com/3d-models/desert-rock-fixed-pack-00c4468f1bca48509d7d2bd66b564cbc"
+                target="_blank"
+                rel="noreferrer"
+              >
+                rocks
+              </a>{" "}
+              by Erroratten,{" "}
+              <a
+                href="https://sketchfab.com/3d-models/lowpoly-city-street-pack-buildings-stylized-8e1ba8a437c4460eaaa643953eaf79d0"
+                target="_blank"
+                rel="noreferrer"
+              >
+                city
+              </a>{" "}
+              by haykel-shaba.
+            </footer>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

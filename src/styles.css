@@ -183,7 +183,10 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 @media (prefers-reduced-motion: reduce) { .world-loader, .loader-fill, .loader-stages li.active .loader-tick { animation: none; } }
 
 /* ------------------------------------------------------------------ homepage */
-.menu { --accent: #f6c84c; --sky-a: #7a4128; --sky-b: #e5a45f; --sky-c: #101615; display: flex; flex-direction: column; padding: clamp(18px, 3.2vw, 42px); }
+/* One screen, always: the menu is laid out against the viewport height and the start dock is pinned
+   to the bottom, so the run button and the sound control are on screen on a laptop without a scroll.
+   Narrow screens fall back to the old scrolling layout in the media query at the end. */
+.menu { --accent: #f6c84c; --sky-a: #7a4128; --sky-b: #e5a45f; --sky-c: #101615; display: flex; flex-direction: column; height: 100dvh; overflow: hidden; padding: clamp(12px, 2.2vw, 26px); }
 .menu[data-world="desert"] { --accent: #f6b95c; --sky-a: #7a4128; --sky-b: #e5a45f; --sky-c: #101615; }
 .menu[data-world="city"] { --accent: #51e4ff; --sky-a: #102a4c; --sky-b: #2f7fa8; --sky-c: #070a11; }
 .menu[data-world="forest"] { --accent: #9af29d; --sky-a: #12362b; --sky-b: #4f9a72; --sky-c: #050d0b; }
@@ -192,10 +195,19 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .menu-dust { position: absolute; inset: -25% -15%; background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 24%, transparent), transparent 72%); opacity: .3; animation: menu-drift 18s ease-in-out infinite alternate; }
 .menu-grid { position: absolute; inset: 0; opacity: .06; background-image: linear-gradient(#dff3e7 1px, transparent 1px), linear-gradient(90deg, #dff3e7 1px, transparent 1px); background-size: 78px 78px; mask-image: linear-gradient(to bottom, black, transparent 70%); }
 @keyframes menu-drift { from { transform: translate3d(-4%, -2%, 0) scale(1); } to { transform: translate3d(7%, 5%, 0) scale(1.14); } }
-.menu-topbar, .menu-layout { position: relative; z-index: 2; }
-.menu-topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.menu-wordmark { color: #e9f3ee; font-size: 14px; font-weight: 600; letter-spacing: .34em; text-transform: uppercase; }
-.menu-wordmark span { color: #f6c84c; }
+.menu-topbar, .menu-layout, .start-dock { position: relative; z-index: 2; }
+.menu-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; min-height: 38px; }
+.menu-wordmark { color: #e9f3ee; font-size: 15px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
+.menu-wordmark span { color: var(--accent); }
+.menu-tools { display: flex; align-items: center; gap: 10px; }
+.menu-help { padding: 7px 13px; border: 1px solid #33564c; background: #0b1513cc; color: #cfe2d9; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; transition: .2s ease; }
+.menu-help:hover { border-color: var(--accent); color: #eaf4ee; }
+.menu-label { color: #8fb0a4; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; }
+/* Specificity over the panel below on purpose: the compact control shares its class list with the
+   pause overlay's panel, and this is the same control at a different size. */
+.sound-settings.sound-compact { flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 5px 10px; }
+.sound-settings.sound-compact .sound-range { width: 84px; flex: none; }
+.sound-settings.sound-compact .sound-value { min-width: 3ch; }
 .engine-chip { display: inline-flex; align-items: center; gap: 9px; padding: 8px 15px; border: 1px solid #2c4a41; border-radius: 999px; background: #08120fb0; backdrop-filter: blur(9px); color: #c4d9ce; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; }
 .engine-dot { width: 7px; height: 7px; border-radius: 50%; background: #f6c84c; }
 .engine-live .engine-dot { background: #6ee7a0; animation: engine-pulse 2.6s ease-out infinite; }
@@ -206,34 +218,25 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 @keyframes engine-pulse { 0% { box-shadow: 0 0 0 0 #6ee7a066; } 100% { box-shadow: 0 0 0 11px #6ee7a000; } }
 .eyebrow, .heading-note, .menu-controls, .run-status, .orbis-preview, small { font-family: "DM Mono", monospace; letter-spacing: .12em; text-transform: uppercase; }
 .eyebrow { color: #8ebba9; font-size: 10px; }
-.menu-layout { flex: 1; display: grid; grid-template-columns: minmax(240px, .95fr) minmax(300px, 1.05fr) minmax(270px, .95fr); gap: clamp(18px, 3vw, 46px); align-items: center; padding: clamp(18px, 3vw, 40px) 0 0; }
-.menu-intro { display: flex; flex-direction: column; gap: 16px; }
-.menu-title { margin: 0; font-size: clamp(38px, 5.4vw, 74px); line-height: .86; letter-spacing: -.06em; font-weight: 600; }
-.menu-title em { color: var(--accent); font-style: normal; }
-.menu-dot { color: #f06d4f; }
-.menu-lede { max-width: 40ch; margin: 0; color: #9fb5ac; font-size: 15px; line-height: 1.55; }
-.menu-facts { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 4px 0 0; padding: 14px 0 0; border-top: 1px solid #24413a; list-style: none; }
-.menu-facts li { color: #7f9d90; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
-.menu-facts b { display: block; margin-bottom: 4px; color: #eaf4ee; font-family: "Space Grotesk", sans-serif; font-size: 19px; letter-spacing: -.02em; }
-.menu-stage { display: flex; flex-direction: column; gap: 12px; }
-.stage-frame { position: relative; height: clamp(240px, 40vh, 380px); border: 1px solid #2b4a41cc; background: linear-gradient(to bottom, #071014eb 6%, #0710148f 46%, #071014d9 96%); backdrop-filter: blur(3px); box-shadow: 0 24px 60px #03080799, inset 0 0 0 1px #ffffff08; overflow: hidden; }
+/* Three columns, one screen. The stage takes whatever height is going spare; the columns themselves
+   never scroll — a control that has to be scrolled to is the thing this layout exists to prevent. */
+.menu-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(228px, .92fr) minmax(300px, 1.25fr) minmax(228px, .92fr); gap: clamp(14px, 2.6vw, 34px); align-items: stretch; padding: clamp(12px, 2vw, 22px) 0 0; }
+.menu-column { display: flex; flex-direction: column; gap: 9px; min-height: 0; }
+.menu-column-picture { min-width: 0; }
+.menu-stage { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.stage-frame { position: relative; flex: 1; min-height: 200px; border: 1px solid #2b4a41cc; background: linear-gradient(to bottom, #071014eb 6%, #0710148f 46%, #071014d9 96%); backdrop-filter: blur(3px); box-shadow: 0 24px 60px #03080799, inset 0 0 0 1px #ffffff08; overflow: hidden; }
 .stage-frame::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, #050c0ac4, transparent 58%); pointer-events: none; }
 .stage-loading { display: grid; place-items: center; height: 100%; color: #82a397; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
 .stage-world { position: absolute; left: 14px; bottom: 12px; z-index: 2; color: var(--accent); font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .18em; text-transform: uppercase; }
-.stage-caption { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.stage-caption strong { font-size: 17px; font-weight: 500; }
-.stage-caption small { color: #78988d; font-size: 8px; }
-.runner-rail { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.runner-rail { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; flex: none; }
 .rail-card { display: flex; flex-direction: column; gap: 6px; padding: 11px 12px; border: 1px solid #26433b; background: #0a1513cc; color: #dcebe3; text-align: left; cursor: pointer; transition: .2s ease; }
 .rail-card:hover { border-color: #3f6b5d; transform: translateY(-2px); }
 .rail-card.selected { border-color: var(--accent); box-shadow: inset 0 -3px var(--accent); }
 .rail-index { color: #6c8b80; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .16em; }
 .rail-name { font-size: 13px; font-weight: 500; }
-.menu-worlds { display: flex; flex-direction: column; gap: 9px; }
-.menu-worlds .start-button { margin-top: 4px; }
 .section-heading { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
 .heading-note { color: #668177; font-size: 9px; }
-.world-card { position: relative; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid #2a453d; background: #0b1513d9; color: #edf5f0; text-align: left; cursor: pointer; overflow: hidden; transition: .22s ease; }
+.world-card { position: relative; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #2a453d; background: #0b1513d9; color: #edf5f0; text-align: left; cursor: pointer; overflow: hidden; transition: .22s ease; }
 .world-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--world-tint, #3d6a5c); }
 .world-card:hover { transform: translateX(3px); border-color: #47705f; }
 .world-card.selected { border-color: var(--accent); box-shadow: 0 14px 34px #03080780; }
@@ -245,15 +248,16 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .world-copy { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .world-copy strong { font-size: 18px; font-weight: 500; letter-spacing: -.01em; }
 .world-copy small { color: #9eb2a9; font-size: 8px; }
-.world-hazards { display: flex; gap: 6px; margin-top: 3px; }
-.world-hazards i { padding: 3px 8px; border: 1px solid #2f4c43; border-radius: 999px; color: #9ec0b2; font-family: "DM Mono", monospace; font-size: 8px; font-style: normal; letter-spacing: .1em; text-transform: uppercase; }
 .world-arrow { color: #628277; font-size: 18px; opacity: .7; }
+/* The record for this world, on the card that picks it. Quieter than the hazards above it: a target is
+   an invitation, not a feature. */
+.world-best { color: #7f9d90; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; }
 
 /* ---- running in a picture the player brought ----------------------------------------------------
    Styled as a peer of the world cards rather than as a form control, because that is what it is: the
    same kind of choice, one row further down. The preview is the prepared frame itself — the exact
    bytes that get uploaded — so what the player sees here is what the model is handed. */
-.landscape-block { position: relative; display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding-top: 12px; border-top: 1px solid #24413a; }
+.landscape-block { position: relative; display: flex; flex-direction: column; gap: 6px; }
 .landscape-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .landscape-drop { display: flex; align-items: center; gap: 11px; padding: 13px 14px; border: 1px dashed #33564c; background: #0a1513b3; color: #b9d3c8; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; text-align: left; cursor: pointer; transition: .2s ease; }
 .landscape-drop:hover { border-color: var(--accent); color: #eaf4ee; }
@@ -280,26 +284,120 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .world-pick .world-index { font-size: 8px; }
 .world-pick-name { font-size: 11px; font-weight: 500; letter-spacing: -.01em; }
 
+/* The terms, and the bank that unlocks them. A locked deal carries its own unlock button under the
+   chip, so the column grows rather than the chip: the choice and the purchase are different acts and
+   are drawn as such. */
+.menu-deals { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.menu-deals-label { color: #8fb0a4; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.menu-deals-label b { color: #8ffbe0; }
+.menu-deal-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-items: start; }
+.menu-deal { display: flex; flex-direction: column; gap: 4px; }
+.menu-deal-pick { position: relative; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border: 1px solid #2a453d; background: #0b1513d9; color: #dcebe3; text-align: left; cursor: pointer; transition: .2s ease; }
+.menu-deal-pick:hover:enabled { border-color: #47705f; }
+.menu-deal-pick[data-selected="true"] { border-color: var(--accent); box-shadow: inset 0 -3px var(--accent); }
+.menu-deal-pick:disabled { cursor: not-allowed; opacity: .55; border-style: dashed; }
+.menu-deal-pick b { font-size: 11px; font-weight: 500; letter-spacing: -.01em; }
+.menu-deal-pick small { color: #8fb0a4; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .04em; }
+.menu-deal-unlock { padding: 4px 8px; border: 1px solid #35594d; background: none; color: #8ffbe0; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; cursor: pointer; transition: .2s ease; }
+.menu-deal-unlock:hover:enabled { border-color: var(--accent); }
+.menu-deal-unlock:disabled { color: #5d7c71; border-color: #24413a; cursor: not-allowed; }
+
 /* The run's world cell names the picture the player supplied, and a file name is long enough to push
    the HUD leftwards into the world chip beside it — the HUD is right-aligned, so it grows towards
    whatever is next to it. Clamped at the point where it would reach the chip; the full name is in the
    cell's title. The label line above carries the world, which is short and predictable. */
 .run-hud > div:last-child strong { display: block; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-controls { margin: 2px 0 0; color: #5d7c71; font-size: 8px; text-align: center; }
+/* The game's sound controls, shared by the menu and the pause overlay. Styled as a footnote of the
+   surface it sits on rather than a third call to action beside Start — the same reasoning as the
+   controls line above it — and the two surfaces differ only in width and in what is behind them. */
+.sound-settings { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding: 10px 12px; border: 1px solid #24413a; background: #0a151380; }
+.sound-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sound-toggle { padding: 5px 10px; border: 1px solid #33564c; background: #0b1513cc; color: #cfe2d9; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; transition: .2s ease; }
+.sound-toggle:hover { border-color: var(--accent); color: #eaf4ee; }
+.sound-toggle[aria-pressed="true"] { border-color: #b08a7c; color: #f0d9cf; }
+.sound-row { display: flex; align-items: center; gap: 10px; }
+.sound-range { flex: 1; height: 3px; min-width: 0; appearance: none; background: #1d3a33; cursor: pointer; }
+.sound-range::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--accent); }
+.sound-range::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--accent); }
+.sound-settings[data-muted="true"] .sound-range { opacity: .45; }
+.sound-value { min-width: 4ch; color: #9ec0b2; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .08em; text-align: right; }
+.sound-hint { margin: 0; color: #5d7c71; font-size: 9px; line-height: 1.4; }
 .menu-note { margin: 0; color: #b08a7c; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .08em; line-height: 1.5; overflow-wrap: anywhere; }
 /* The CC-BY-4.0 credit for the scenery packs. Present in every world, so it stays quieter than the
    controls line above it and reads as a footnote rather than part of the menu. */
 .menu-credits { margin: 4px 0 0; color: #4f6c62; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .06em; line-height: 1.6; text-align: center; }
 .menu-credits a { color: #7d9d90; text-decoration: none; border-bottom: 1px solid #33564c; }
 .menu-credits a:hover { color: #f0d9cf; border-bottom-color: #b08a7c; }
-.start-button { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 12px; padding: 17px 20px; border: 0; color: #071014; background: #f6c84c; cursor: pointer; font-weight: 600; text-transform: uppercase; }
+
+/* The instructions, on demand: a modal over the menu rather than a page under it. */
+.menu-modal { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #030807c9; backdrop-filter: blur(6px); }
+.menu-modal-card { display: flex; flex-direction: column; width: min(560px, 94vw); max-height: min(86vh, 720px); border: 1px solid #2b4a41; background: #08120ff5; box-shadow: 0 30px 80px #030807cc; }
+.menu-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #24413a; }
+.menu-modal-close { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #33564c; background: none; color: #9ec0b2; font-size: 12px; cursor: pointer; }
+.menu-modal-close:hover { border-color: var(--accent); color: #eaf4ee; }
+.menu-modal-body { display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto; }
+.menu-modal-body h3 { margin: 0 0 4px; color: var(--accent); font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .16em; text-transform: uppercase; }
+.menu-modal-body p { margin: 0; color: #bfd4ca; font-size: 13px; line-height: 1.55; }
+.menu-modal-body b { color: #f5f7ef; font-weight: 500; }
+.menu-modal-card .menu-credits { margin: 0; padding: 12px 16px; border-top: 1px solid #24413a; text-align: left; }
+/* The start dock: the run button and what the run will be, pinned to the bottom of the screen. It is
+   outside the layout grid so no column can push it out of view, and the button keeps its full size —
+   this is the one control the whole screen exists to reach. */
+.start-dock { flex: none; display: flex; align-items: center; justify-content: space-between; gap: clamp(12px, 3vw, 36px); padding-top: clamp(10px, 1.6vw, 16px); }
+.start-summary { min-width: 0; color: #7f9d90; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.start-button { display: flex; justify-content: space-between; align-items: center; gap: 28px; width: min(360px, 46%); padding: 15px 20px; border: 0; color: #071014; background: #f6c84c; cursor: pointer; font-weight: 600; text-transform: uppercase; transition: .2s ease; }
+.start-button:hover:enabled { transform: translateY(-2px); box-shadow: 0 16px 38px #f6c84c33; }
 .start-button b { font-size: 24px; font-weight: 400; }
 .character-preview { width: 100%; height: 100%; }
 .character-preview canvas { width: 100% !important; height: 100% !important; }
 .game-stage { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .game-stage canvas { pointer-events: auto; }
-.pause-overlay { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #07101488; backdrop-filter: blur(8px); }
+/* `pointer-events: auto` because the stage is a `pointer-events: none` surface with only the canvas
+   back on: a pause that carries controls has to be able to receive the click. */
+.pause-overlay { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #07101488; backdrop-filter: blur(8px); pointer-events: auto; }
+/* The end of a run. Deliberately the pause panel's sibling — a run that ends and a run that stops are
+   the same kind of interruption — with the numbers, the record, and the one button worth pressing. */
+.run-over { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; background: #0710149e; backdrop-filter: blur(9px); pointer-events: auto; }
+.run-over-card { display: flex; flex-direction: column; gap: 13px; width: min(430px, 86vw); padding: 24px 24px 20px; border: 1px solid #2b4a41; background: #08120fe0; box-shadow: 0 26px 70px #030807aa; }
+.run-over-card[data-improved="true"] { border-color: var(--accent); box-shadow: 0 26px 70px #030807aa, 0 0 0 1px #f6c84c33; }
+.run-over-title { color: #f5f7ef; font-size: clamp(22px, 3.4vw, 32px); font-weight: 600; letter-spacing: -.02em; }
+.run-over-card[data-improved="true"] .run-over-title { color: var(--accent); }
+.run-over-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 13px 0; border-top: 1px solid #24413a; border-bottom: 1px solid #24413a; }
+.run-over-stats small { display: block; margin-bottom: 5px; color: #668177; }
+.run-over-stats strong { font-size: 19px; font-weight: 600; }
+.run-over-record { margin: 0; color: #9ec0b2; font-size: 11px; line-height: 1.5; }
+/* What the run paid into the bank. It sits under the record line because it is the other half of what a
+   run is for: a run that set no record can still be the run that unlocked the next deal. */
+.run-over-bank { display: flex; align-items: baseline; gap: 8px; margin: 0; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.run-over-bank span { color: #8ffbe0; }
+.run-over-bank small { color: #668177; }
+.run-over-actions { display: flex; align-items: stretch; gap: 10px; margin-top: 3px; }
+/* Taking a deal. Two columns rather than one long list: the terms line under each name is the part
+   that decides anything, and a column keeps all four readable at once on the surfaces that show it.
+   A selected chip wears the world's accent on its underline, the same language the world cards and
+   the pickers in the menu already use for "this is the one you have". */
+.contract-picker { display: flex; flex-direction: column; gap: 7px; width: min(360px, 82vw); margin-top: 14px; }
+.contract-picker-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.contract-picker-head small { color: #5d7c71; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; }
+.contract-chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.contract-chip { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border: 1px solid #2a453d; background: #0b1513d9; color: #dcebe3; text-align: left; cursor: pointer; transition: .2s ease; }
+.contract-chip:hover { border-color: #47705f; }
+.contract-chip[data-selected="true"] { border-color: var(--accent); box-shadow: inset 0 -3px var(--accent); }
+.contract-chip b { font-size: 11px; font-weight: 500; letter-spacing: -.01em; }
+.contract-chip small { color: #8fb0a4; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .04em; text-transform: none; }
+/* A deal the bank has not paid for. Shown, not hidden — the picker is where a player finds out the
+   harder deals exist — but shut, dashed, and carrying its price instead of its terms. */
+.contract-chip[data-locked="true"] { cursor: not-allowed; opacity: .55; border-style: dashed; }
+.contract-chip[data-locked="true"] small { color: #7f9d90; }
+.run-again { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex: 1; padding: 14px 18px; border: 0; background: var(--accent); color: #071014; font-weight: 600; text-transform: uppercase; cursor: pointer; }
+.run-again b { font-size: 17px; font-weight: 400; }
+.run-over-actions .quiet-button { display: flex; align-items: center; }
 .pause-overlay strong { color: #f5f7ef; font-size: clamp(24px, 4vw, 42px); font-weight: 500; }
+/* The panel on a pause: the same control as the menu's, given a width of its own because the overlay
+   has the room, and a little more presence against the blurred world behind it. */
+.pause-overlay .sound-settings { width: min(320px, 78vw); margin-top: 16px; background: #071014cc; backdrop-filter: blur(6px); }
+.pause-overlay .sound-hint { text-align: center; }
 /* The generated world: one surface behind everything, live when a session is up and the local
    gradient until then. Only the streaming state fades in, so a connecting session never shows as
    a black rectangle. */
@@ -366,7 +464,90 @@ html[data-surface="menu"] .world-layer { opacity: 0 !important; animation: none;
 .quiet-button { border: 0; color: #e5eee9; background: #071014aa; padding: 9px 13px; cursor: pointer; }
 .run-status { color: #a9c6b7; font-size: 9px; }
 .status-dot, .orbis-pulse { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #f6c84c; box-shadow: 0 0 14px #f6c84c; }
-.run-hud { top: 80px; right: 30px; display: flex; gap: 22px; padding: 14px 17px; background: #071014b8; backdrop-filter: blur(10px); }
+.run-hud { top: 25px; right: 30px; display: flex; flex-direction: column; gap: 9px; padding: 11px 15px; background: #071014b8; backdrop-filter: blur(10px); }
+.run-cells { display: flex; flex-wrap: wrap; gap: 20px; }
+/* The vitals: the hits left and the combo, above the numbers rather than among them. They are status
+   rather than counters — the difference between reading the HUD and glancing at it. */
+.run-vitals { display: flex; align-items: center; gap: 14px; padding-bottom: 10px; border-bottom: 1px solid #24413a; }
+.run-hud[data-damage="2"] { background: #1c0f0cc9; }
+.run-hud[data-damage="3"] { background: #230d0ad4; }
+.hud-hits { display: flex; gap: 5px; }
+/* The terms, beside the pips they decide. Quiet next to the counters — it is a caption on the deal
+   rather than a meter — but always on screen, because every other number in this panel is measured
+   against it: the pips are its hit count, the pressure bar is damage against it, and a token pays its
+   scale. Coloured by what the deal risks, so "Glass cannon" is visible at a glance. */
+.hud-contract { display: flex; flex-direction: column; gap: 1px; padding-left: 10px; border-left: 1px solid #24413a; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.hud-contract b { color: #cfe2d9; font-size: 9px; letter-spacing: .14em; }
+.hud-contract small { color: #668177; font-size: 8px; letter-spacing: .04em; text-transform: none; }
+.hud-contract[data-contract="standard"] b { color: #9ec0b2; }
+.hud-contract[data-contract="glass"] b { color: #ff9d84; }
+.hud-pip { width: 9px; height: 9px; background: var(--accent); box-shadow: 0 0 10px var(--accent); transition: .25s ease; }
+.hud-pip[data-spent="true"] { background: #33564c; box-shadow: none; }
+.hud-combo { display: flex; align-items: baseline; gap: 6px; color: #6d8b80; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; transition: .25s ease; }
+.hud-combo b { color: #cfe2d9; font-size: 14px; letter-spacing: -.02em; }
+.hud-combo[data-chaining="true"] b { color: var(--accent); }
+.hud-combo[data-milestone="true"] b { color: #fff3c9; text-shadow: 0 0 16px #f6c84c; }
+/* The pressure meter is the run's own damage read back as what the world is doing about it: filled by
+   `dangerLevel`, named for the hazard this world advertises on its menu card. */
+.hud-pressure { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 96px; }
+.hud-pressure small { color: #668177; }
+.hud-pressure-track { display: block; height: 3px; background: #1d3a33; }
+.hud-pressure-fill { display: block; height: 100%; background: var(--hazard, #f6c84c); transition: width .35s ease; }
+/* The pickups that are still running: a shield is invisible until it saves you, and the two timers
+   bend rules in ways that read as faults without a label. Each wears its own pickup's colour, the
+   same three colours the pieces in the world are drawn in. */
+/* The ghost race: how far ahead of (or behind) the best run in this world this run is, compared at the
+   same second in. Green for ahead, a dim red for behind — the only readout in the panel that is a
+   comparison rather than a measurement, which is why it is the only one wearing two colours. */
+.hud-ghost { display: flex; align-items: baseline; gap: 5px; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.hud-ghost small { color: #668177; }
+.hud-ghost b { font-size: 11px; letter-spacing: 0; }
+.hud-ghost[data-ahead="true"] b { color: #8ffbe0; text-shadow: 0 0 14px #8ffbe07d; }
+.hud-ghost[data-ahead="false"] b { color: #d09284; }
+.hud-pickups { display: flex; align-items: center; gap: 6px; }
+.hud-pickup { display: inline-flex; align-items: center; padding: 2px 6px; border: 1px solid currentColor; font-family: "DM Mono", monospace; font-size: 8px; font-style: normal; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.hud-pickup[data-kind="shield"] { color: #7fdcff; }
+.hud-pickup[data-kind="magnet"] { color: #ff8fdd; }
+.hud-pickup[data-kind="double"] { color: #f6c84c; }
+/* The world's own weather, named. Two states, because a hazard that arrives unannounced is just the
+   lighting changing: warning wears the milestone gold and the name alone, active wears the world's
+   own hazard colour and what it is doing. */
+.hud-hazard { display: flex; flex-direction: column; gap: 2px; padding: 3px 7px; border: 1px solid currentColor; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.hud-hazard b { font-size: 9px; letter-spacing: .14em; }
+.hud-hazard small { color: inherit; font-size: 8px; opacity: .78; }
+.hud-hazard[data-phase="warning"] { color: #f6c84c; animation: hazard-warn 1.1s ease-in-out infinite; }
+.hud-hazard[data-phase="active"] { color: var(--hazard, #f6c84c); background: #071014c9; }
+@keyframes hazard-warn { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+/* Flow: the run's form, and the rate the ground pays. Built by near misses and threaded gaps, drained
+   by clean running, wiped by a hit. */
+.hud-flow { display: flex; align-items: center; gap: 6px; min-width: 104px; }
+.hud-flow small { color: #668177; }
+.hud-flow-track { position: relative; display: block; flex: 1; height: 4px; background: #1d3a33; }
+.hud-flow-fill { display: block; height: 100%; background: linear-gradient(90deg, #6f8f80, #cfe2d9); transition: width .25s linear; }
+.hud-flow b { color: #cfe2d9; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .04em; }
+.hud-flow[data-flow="true"] .hud-flow-fill { background: linear-gradient(90deg, #f6c84c, #fff3c9); box-shadow: 0 0 12px #f6c84c; }
+.hud-flow[data-flow="true"] b { color: #fff3c9; }
+.hud-threads { color: #f6c84c; font-family: "DM Mono", monospace; font-size: 9px; font-style: normal; letter-spacing: .04em; }
+/* The weather over the picture, screen-space because the generated world is a video behind the canvas:
+   `--weather` is the simulation's own intensity (see `hazards.ts`), so the scrim swells and passes
+   with the hazard rather than switching on at a phase boundary. */
+.hazard-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: var(--weather, 0); transition: opacity .45s linear; }
+:root[data-hazard="shove"] .hazard-layer { background: linear-gradient(180deg, rgba(232,163,102,.5), rgba(214,150,96,.16) 46%, rgba(96,58,32,.45)); }
+:root[data-hazard="blackout"] .hazard-layer { background: radial-gradient(125% 85% at 50% 84%, rgba(2,5,9,0) 14%, rgba(2,5,9,.94) 64%); }
+:root[data-hazard="fog"] .hazard-layer { background: linear-gradient(180deg, rgba(206,222,212,.76), rgba(206,222,212,.3) 56%, rgba(206,222,212,.08)); }
+:root[data-hazard-phase="warning"] .hazard-layer { animation: hazard-warn 1.1s ease-in-out infinite; }
+/* The run shell's own palette.
+
+   The menu carries its accent on `.menu[data-world]`, and the run shell is a *different* element — so
+   everything in a run that reached for `var(--accent)` (the unspent hit pips, the run-again button,
+   the volume sliders) was reaching for a property nothing had set on this side of the transition. An
+   unresolved `var()` makes the whole declaration invalid rather than falling back, so the pips that
+   say how many hits are left were drawn with no background at all and the primary button was flat
+   transparent. Declared here, beside `--hazard`, because both are the same idea: this world's colour,
+   on the surface that shows it. */
+.environment-desert { --accent: #f6b95c; --hazard: #e8a366; }
+.environment-city { --accent: #51e4ff; --hazard: #51e4ff; }
+.environment-forest { --accent: #9af29d; --hazard: #9af29d; }
 .run-hud div { display: flex; flex-direction: column; gap: 5px; }
 .run-hud small { color: #7f9d90; font-size: 8px; }
 .run-hud strong { color: #f5f7ef; font-size: 20px; font-weight: 500; }
@@ -398,6 +579,18 @@ html:has(.world-layer[data-video="streaming"]) .run-hud,
 html:has(.world-layer[data-video="streaming"]) .director-card { backdrop-filter: none; background: #071014e6; }
 .director-card p { margin: 9px 0 13px; font-size: 13px; line-height: 1.45; }
 .director-card small { color: #77958a; font-size: 9px; line-height: 1.4; }
+/* The feed of answered asks. Each entry reads as one sentence — what the run did, then what the world
+   did about it — and carries the prompt underneath as the evidence for it. The newest entry is the
+   brightest, so the card reads down from what just happened. */
+.director-idle { margin: 9px 0 13px; color: #77958a; font-size: 12px; line-height: 1.45; }
+.director-feed { display: flex; flex-direction: column; gap: 8px; margin: 9px 0 0; padding: 0; list-style: none; }
+.director-feed li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; padding-top: 8px; border-top: 1px solid #1c332c; font-size: 12px; line-height: 1.35; }
+.director-feed li:first-child { padding-top: 0; border-top: 0; }
+.director-feed b { color: #f6c84c; font-family: "DM Mono", monospace; font-size: 10px; letter-spacing: .12em; }
+.director-feed span { color: #d6e7df; }
+/* The ask, dimmed and clamped: present for anyone who looks, silent for everyone who does not. */
+.director-feed em { flex: 0 0 100%; color: #5d7c71; font-family: "DM Mono", monospace; font-size: 8px; font-style: normal; line-height: 1.45; letter-spacing: .02em; text-transform: none; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.director-feed li:not(:first-child) { opacity: .62; }
 .orbis-preview { position: absolute; top: 100px; left: 50%; z-index: 4; display: flex; align-items: center; gap: 10px; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgba(7,16,20,.55); color: #c4d9ce; font-size: 9px; white-space: nowrap; opacity: .9; }
 .orbis-preview.is-error { color: #f0b8a8; background: rgba(38,12,10,.6); }
 .orbis-preview.tone-live { color: #c6f0d8; }
@@ -405,7 +598,35 @@ html:has(.world-layer[data-video="streaming"]) .director-card { backdrop-filter:
 .orbis-preview.tone-local { color: #e2cbc0; }
 .orbis-preview .quiet-button { font-size: 9px; padding: 3px 10px; }
 .orbis-error-text { max-width: 46ch; overflow: hidden; text-overflow: ellipsis; text-transform: none; letter-spacing: .04em; opacity: .86; }
-@media (max-width: 1080px) { .menu-layout { grid-template-columns: minmax(0, 1fr) minmax(260px, .9fr); align-items: start; overflow-y: auto; } .menu-intro { grid-column: 1 / -1; } .menu-title { font-size: clamp(40px, 9vw, 68px); } }
+
+/* ---- the play screen shows the run, not the machinery -------------------------------------------
+   Visible: the score, the tokens, the distance, the hits left, whatever powerup is running, and the
+   world's weather while it is here — the things a decision can be made from. Hidden: the deal's name
+   and terms, the pressure bar, the ghost race, the flow meter, the token ramp, the world chip and the
+   world-answer feed. Those stay mounted — the probes and the development readouts are built on them —
+   and none of them is something the player has to read while running. */
+.run-hud .hud-contract,
+.run-hud .hud-pressure,
+.run-hud .hud-ghost,
+.run-hud .hud-flow,
+.run-hud .hud-world,
+.run-hud .token-ramp,
+.orbis-preview,
+.director-card { display: none; }
+
+/* The DOM half of the pause: every CSS animation on the page — the generated video's slow breathe,
+   the screen-space weather — holds still with the scene, so nothing moves behind the pause card.
+   The scene's own clock is stopped in `RunnerScene`. */
+html[data-paused="true"] * { animation-play-state: paused !important; }
+/* Narrow screens get the scrolling layout back rather than a squeezed one: the menu is built to fit a
+   laptop viewport, and below that the right answer is to let it be taller than the screen and keep
+   the controls reachable by scrolling. */
+@media (max-width: 1080px) {
+  .menu { height: auto; min-height: 100dvh; overflow: visible; }
+  .menu-layout { grid-template-columns: minmax(0, 1fr) minmax(260px, .9fr); align-items: start; }
+  .menu-column-picture { grid-column: 1 / -1; }
+  .start-dock { position: sticky; bottom: 0; padding: 12px 0; background: linear-gradient(180deg, #07101400, #071014e6 34%); }
+}
 @media (max-width: 420px) {
   /* The header's three items need the full width of a narrow phone at their smallest sizes, so they
      shrink, the exit button's label wraps onto a second line, and the header grows from 39px to 60px —
