@@ -13,6 +13,8 @@
 //     which is the only shape a ghost can be read from;
 //   - the ghost: on the second run, `window.__runfield().ghost` names the lane the stored line held at
 //     the metre the run is at, and the HUD's race number equals the readout's own `ahead`;
+//   - the best-line mark: off by default with nothing written to `watchme-run:marker`, switched on from
+//     the menu the way a player would, and only then drawn on the road in the lane the line held;
 //   - the deal purchase: with a seeded balance, unlocking costs exactly the price, writes the deal to
 //     `watchme-run:deals`, and refuses a deal the balance cannot pay for.
 //
@@ -146,6 +148,7 @@ const SAMPLE = `(() => {
     score: field.score,
     tokens: field.tokens,
     lane: field.lane,
+    speed: field.speed,
     damage: field.damage,
     ghost: field.ghost ?? null,
     ghostMark: field.ghostMark ?? null,
@@ -268,7 +271,7 @@ try {
   // the sound settings are not part of the claims.
   await waitFor(`Boolean(document.querySelector(".world-card") && document.querySelector(".start-button"))`, 150);
   await evaluate(`(() => {
-    for (const key of ["watchme-run:records", "watchme-run:bank", "watchme-run:deals", "watchme-run:contract"]) {
+    for (const key of ["watchme-run:records", "watchme-run:bank", "watchme-run:deals", "watchme-run:contract", "watchme-run:marker"]) {
       window.localStorage.removeItem(key);
     }
     return true;
@@ -289,6 +292,10 @@ try {
       } : null,
     })),
     label: document.querySelector(".menu-deals-label")?.textContent?.replace(/\\s+/g, " ") ?? null,
+    marker: {
+      state: document.querySelector(".marker-compact")?.dataset.on ?? null,
+      stored: window.localStorage.getItem("watchme-run:marker"),
+    },
   }))()`);
   console.log(`  ${JSON.stringify(menu)}`);
   check(menu.deals.length === 4, "the menu offers four deals", `${menu.deals.length} found`);
@@ -302,6 +309,10 @@ try {
     menu.deals.filter((deal) => deal.locked).map((deal) => `${deal.id}:${deal.unlock.disabled}`).join(", "),
   );
   check(/0\s+tokens banked/.test(menu.label ?? ""), "the bank reads zero", menu.label ?? "no label");
+  // The best-line mark is help rather than furniture, so it is off until asked for: nothing written to
+  // the store and the switch saying so.
+  check(menu.marker.state === "false", "the best-line mark starts off", `data-on ${menu.marker.state}`);
+  check(menu.marker.stored === null, "nothing is stored about the mark before it is asked for", `stored ${menu.marker.stored}`);
 
   /* ---- run 1: played into the traffic, because a record is filed when a run ends ---------------- */
   const pickWorldAndStart = async () => {
@@ -389,7 +400,11 @@ try {
     `${samples} samples for ${firstLine.distance} m (expected ~${expected})`,
   );
   check(worstDistance <= 2, "the line ends where the run ended", `${worstDistance} m short`);
-  check(spacing.every((gap) => Math.abs(gap - 20) <= 1), "the samples are evenly spaced", spacing.slice(0, 6).join(", "));
+  // Every gap is at least the sampling distance and no gap is a short one: a sample is written when the
+  // run has *crossed* the mark, never before it. The ceiling is generous on purpose — a slow frame that
+  // lands at 24 m writes 24 m, and that is the frame's business rather than the line's.
+  const spacingOff = spacing.filter((gap) => gap < 19 || gap > 26);
+  check(spacingOff.length === 0, "the samples are evenly spaced", spacing.slice(0, 6).join(", "));
 
   /* ---- the purchase: with a balance, unlocking costs exactly the price -------------------------- */
   console.log(`${stamp()} the bank and the deals, with a seeded balance of ${SEED_BANK}`);
@@ -429,6 +444,12 @@ try {
   check(bought.selected === "true", "buying a deal takes it", `data-selected ${bought.selected}`);
 
   /* ---- run 2: the ghost, and the race ---------------------------------------------------------- */
+  // Switched on the way a player would, from the menu, so the rest of the run is a check of the mark
+  // itself rather than of a store seeded behind the interface's back.
+  await run(`document.querySelector(".marker-compact .marker-toggle")?.click()`);
+  await sleep(150);
+  const markerOn = await json(`document.querySelector(".marker-compact")?.dataset.on ?? null`);
+  check(markerOn === "true", "the switch turns the best-line mark on", `data-on ${markerOn}`);
   console.log(`${stamp()} ${WORLD}: run 2 — racing the line run 1 left`);
   if (!(await pickWorldAndStart())) throw new Error("the second run never came up");
   await evaluate(RECORDER);
@@ -456,7 +477,7 @@ try {
       continue;
     }
     second = sample;
-    ghostSamples.push({ distance: sample.distance, ghost: sample.ghost, mark: sample.ghostMark, hud: sample.hudGhost });
+    ghostSamples.push({ distance: sample.distance, speed: sample.speed, ghost: sample.ghost, mark: sample.ghostMark, hud: sample.hudGhost });
     lineSamples.push(sample.line);
     if (sample.over || sample.distance >= CHASE_METRES) break;
 
@@ -527,17 +548,19 @@ try {
 
   const hudChecks = withGhost.filter((entry) => entry.hud);
   // The HUD is refreshed five times a second and the readout is the frame's own number, so the two are
-  // allowed a metre or two of daylight: at 14 m/s a run gains a metre between HUD renders, and a check
-  // that demanded the same number at the same instant would be testing the throttling, not the ghost.
+  // allowed daylight — and it is proportional to speed, because the probe reads the HUD's text and the
+  // readout in two round trips while the world keeps moving: at 14 m/s a run gains three metres between
+  // them, which a fixed three-metre tolerance fails on for a reason that is not the ghost.
+  const hudSlack = (entry) => 1 + (entry.speed ?? 0) * 0.35;
   const hudWrong = hudChecks.filter(
-    (entry) => Math.abs(Number(String(entry.hud).replace(/[^0-9]/g, "")) - Math.abs(entry.ghost.ahead)) > 3,
+    (entry) => Math.abs(Number(String(entry.hud).replace(/[^0-9]/g, "")) - Math.abs(entry.ghost.ahead)) > hudSlack(entry),
   );
   console.log(
     `  the race: ${hudChecks.length} HUD reads, ${hudWrong.length} off` +
       (hudWrong.length ? ` — e.g. HUD ${hudWrong[0].hud} against ${round(hudWrong[0].ghost.ahead)} m` : `, last ${hudChecks[hudChecks.length - 1]?.hud ?? "none"}`),
   );
   check(hudChecks.length > 0, "the HUD carries the race");
-  check(hudWrong.length === 0, "the HUD's number is the readout's own gap", "within three metres of it");
+  check(hudWrong.length === 0, "the HUD's number is the readout's own gap", "within a metre plus a third of a second at this speed");
   const aheadAt = withGhost.filter((entry) => entry.ghost.ahead >= 0).length;
   console.log(`  ahead in ${aheadAt} of ${withGhost.length} samples of the line run 1 left`);
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import RunnerScene, { type RunTerms } from "./game/RunnerScene";
 import SoundSettings from "./game/SoundSettings";
+import MarkerSettings from "./game/MarkerSettings";
 import { playCoin } from "./game/audio";
 import { coinMultiplierAt, coinValueAt, difficultyAt, environmentPace } from "./game/pattern-field";
 import type { CharacterId } from "./game/character-catalog";
@@ -645,6 +646,10 @@ export default function RunExperience({ environment, characterId, onExit, leavin
                 the game's, not the world's, so it costs nothing and stopping it would make a pause
                 sound like the game had ended. */}
             <SoundSettings />
+            {/* The mark is a display choice and the pause is where a player makes it: the road is
+                already carrying a line they may not have asked for, and this is the moment they are
+                stopped and looking at it. */}
+            <MarkerSettings />
             {/* A pause is one of the two places a deal can be taken: the player is stopped, the
                 decision is cheap to read, and taking it restarts the run they were already willing
                 to interrupt. */}

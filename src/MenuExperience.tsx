@@ -3,6 +3,7 @@ import type { ChangeEvent } from "react";
 import type { CharacterId } from "./game/character-catalog";
 import { characterCatalog } from "./game/character-catalog";
 import SoundSettings from "./game/SoundSettings";
+import MarkerSettings from "./game/MarkerSettings";
 import type { Environment } from "./game/run-state";
 import { readRecords } from "./game/records";
 import { readWorldChoice, rememberWorldChoice, worlds } from "./game/worlds";
@@ -292,6 +293,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
             {menuWorldLabel(worldState)}
           </button>
           <SoundSettings compact />
+          <MarkerSettings compact />
           <button className="menu-help" type="button" onClick={() => setHelpOpen(true)}>
             How to play
           </button>

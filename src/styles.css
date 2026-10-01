@@ -208,6 +208,11 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .sound-settings.sound-compact { flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 5px 10px; }
 .sound-settings.sound-compact .sound-range { width: 84px; flex: none; }
 .sound-settings.sound-compact .sound-value { min-width: 3ch; }
+/* The best-line mark's switch in the top bar, beside the sound control: one row, a dot that says
+   which state it is in, and the word. The dot is what carries the state at a glance; the button is
+   what changes it (`./game/MarkerSettings`). */
+.marker-settings.marker-compact { flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 5px 10px; }
+.marker-compact .marker-toggle { padding: 2px 8px; }
 .engine-chip { display: inline-flex; align-items: center; gap: 9px; padding: 8px 15px; border: 1px solid #2c4a41; border-radius: 999px; background: #08120fb0; backdrop-filter: blur(9px); color: #c4d9ce; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; }
 .engine-dot { width: 7px; height: 7px; border-radius: 50%; background: #f6c84c; }
 .engine-live .engine-dot { background: #6ee7a0; animation: engine-pulse 2.6s ease-out infinite; }
@@ -323,6 +328,19 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
 .sound-settings[data-muted="true"] .sound-range { opacity: .45; }
 .sound-value { min-width: 4ch; color: #9ec0b2; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .08em; text-align: right; }
 .sound-hint { margin: 0; color: #5d7c71; font-size: 9px; line-height: 1.4; }
+/* The best-line mark's switch, the sound panel's twin: it is asked in the same two places, so it is
+   the same control in the same box. Off is a real state and the hint says so — a player who has not
+   asked for a line drawn on their road should know where to turn it on, and one who has should know
+   where to turn it off. */
+.marker-settings { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding: 10px 12px; border: 1px solid #24413a; background: #0a151380; }
+.marker-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.marker-toggle { padding: 5px 10px; border: 1px solid #33564c; background: #0b1513cc; color: #cfe2d9; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; transition: .2s ease; }
+.marker-toggle:hover { border-color: var(--accent); color: #eaf4ee; }
+.marker-settings[data-on="true"] .marker-toggle { border-color: var(--accent); color: #fff3c9; }
+.marker-dot { width: 7px; height: 7px; border-radius: 50%; background: #33564c; }
+.marker-settings[data-on="true"] .marker-dot { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.marker-label { color: #8fb0a4; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+.marker-hint { margin: 0; color: #5d7c71; font-size: 9px; line-height: 1.4; }
 .menu-note { margin: 0; color: #b08a7c; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .08em; line-height: 1.5; overflow-wrap: anywhere; }
 /* The CC-BY-4.0 credit for the scenery packs. Present in every world, so it stays quieter than the
    controls line above it and reads as a footnote rather than part of the menu. */
@@ -398,6 +416,8 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
    has the room, and a little more presence against the blurred world behind it. */
 .pause-overlay .sound-settings { width: min(320px, 78vw); margin-top: 16px; background: #071014cc; backdrop-filter: blur(6px); }
 .pause-overlay .sound-hint { text-align: center; }
+.pause-overlay .marker-settings { width: min(320px, 78vw); background: #071014cc; backdrop-filter: blur(6px); }
+.pause-overlay .marker-hint { text-align: center; }
 /* The generated world: one surface behind everything, live when a session is up and the local
    gradient until then. Only the streaming state fades in, so a connecting session never shows as
    a black rectangle. */
@@ -641,6 +661,10 @@ html[data-paused="true"] * { animation-play-state: paused !important; }
   /* Keep the primary action reachable without scrolling on a phone. */
   .start-button { position: sticky; bottom: 0; z-index: 5; box-shadow: 0 -14px 30px #071014cc; }
   .menu { padding: 18px 16px; } .menu-layout { grid-template-columns: minmax(0, 1fr); gap: 22px; } .menu-facts { gap: 10px 16px; } .stage-frame { height: 230px; } .menu-wordmark { letter-spacing: .2em; font-size: 12px; } .engine-chip { font-size: 8px; padding: 7px 12px; } .run-header { left: 15px; right: 15px; }
+  /* The top bar carries four controls now, and on a phone the mark's two words are the item that can
+     go: the dot still says which state it is in and the switch still changes it, so nothing that has
+     to be read at a glance is lost. */
+  .marker-compact .marker-label { display: none; }
   /* The world chip and the HUD are both full-width-ish at this breakpoint — centred and right-aligned
      respectively — so at their desktop heights they occupy the same band and the chip lands on top of
      the numbers. Stack them instead: chip directly under the header, HUD below it. */

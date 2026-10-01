@@ -258,9 +258,11 @@ Design notes that matter if you touch this code:
 ### What the menu shows, and what the run screen keeps
 
 The menu is one screen and nothing on it is a scroll away. Its topbar carries the wordmark
-(`Watch.Me.Run`, the dots in the world's accent), the world chip, the sound control, and one button —
-**How to play** — and the controls, the terms, the scoring, the weather and what happens to an
-uploaded picture live behind that button in a modal that Escape closes. Below it: the worlds and the
+(`Watch.Me.Run`, the dots in the world's accent), the world chip, the sound control, the best-line
+mark's switch (off by default; see the ghost notes), and one button — **How to play** — and the
+controls, the terms, the scoring, the weather and what happens to an uploaded picture live behind that
+button in a modal that Escape closes. The mark's switch is in the pause overlay too, from the same
+component, and drops its label below 780 px so four controls still fit a phone's top bar. Below it: the worlds and the
 deals, the stage with the runner on it, and the picture upload, in three columns; the run button sits
 in a dock pinned to the bottom of the viewport with what the run will be. The instructions used to be a
 line under the picture and the sound a panel under that, which is two controls the player had to
@@ -653,6 +655,15 @@ collision the player cannot reason about). A gust takes a lane and the run has t
 direction alternates with the hazard's index, so a storm walks the runner one way and then the other.
 Measured in one desert storm: four lane changes with no key pressed, alternating 1→0, 0→1, 1→0, 1→2.
 
+**The storm may take a lane; it may not take the lane that kills you.** A gust that lands the runner in
+a lane an obstacle is already standing in is not a hazard, it is a hit the player had no way to answer —
+and it reads as the game moving them into the obstacle rather than as weather. So every gust is checked
+before it lands (`laneClearFor`): if the lane the wind wants has an obstacle within the next 22 m, the
+gust goes the other way; if both side lanes are occupied ahead, the gust is held and lands the moment
+the road opens. The storm still takes a lane — that is the hazard — but it can no longer take the one
+that is already occupied. 22 m is over a second at every world's top speed, so what the player gets is
+a decision rather than a coin flip.
+
 **The blackout takes light, and light is information.** The road's and the apron's own materials are
 driven down to 30% of their graded colour — the lane markings are painted into the colour map, so the
 cost is exactly the thing the ground was giving away for free — and the roadside panels, which carry a
@@ -811,11 +822,19 @@ and any record written before lines existed (or hand-edited) reads as an ordinar
 race.
 
 **On the road, the line; in the HUD, the race.** Two different readings of the same quads, because they
-answer different questions. The road carries a mark — a flat ring on the asphalt, additive and unlit —
-standing in the lane the best run held at the metre the player is at now; it is a thing to aim at, not a
-rival, and it slides across the lanes the way the record did. The ring used to be joined by a soft
-standing column of light, and that column read as a cone-shaped object travelling with the player rather
-than as a mark on the road; the mark is now the ring alone. The HUD carries the comparison that
+answer different questions. The road carries a mark — a ring on the asphalt and a soft stand of light
+over it, additive and unlit — standing in the lane the best run held at the metre the player is at now;
+it is a thing to aim at, not a rival, and it slides across the lanes the way the record did.
+
+**The mark on the road is opt-in, and off by default** (`src/game/marker.ts`, one switch used in the
+menu's top bar and in the pause overlay). It is help rather than furniture: a player who has not asked
+for a line to be drawn on their road should not have to work out how to ignore it, and on a first visit
+there is no best run for it to point at anyway. With it on, the mark is the ring *and* the stand of
+light over it — the column is what makes it findable in a crowded frame at speed, which is exactly what
+someone who switches it on is asking for — and with it off, neither is drawn: the mesh stays mounted
+(so the development readout can report the object the switch controls) and its `visible` is set per
+frame from the preference, which is also why the pause overlay's switch is felt the frame it is pressed.
+The HUD carries the comparison that
 actually means something between two runs: **metres ahead or behind the best run at the same second**,
 read by interpolating the line's times. Green is ahead, a dim red is behind. The moment a run is a whole
 metre up on its best — once per run, and not in the opening metres, where the launch surge would beat any

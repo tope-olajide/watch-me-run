@@ -24,6 +24,7 @@ import {
 } from "./pattern-field";
 import { roadGrade } from "./road-grade";
 import { ghostAhead, ghostAt, LINE_METRES, type RunSummary } from "./records";
+import { markerEnabled } from "./marker";
 import { hazardAt, hazardFog, hazardLight, publishHazard, readHazard, shovesFor, windFor } from "./hazards";
 import { environmentLook } from "./world-look";
 import { apronField, apronHeight, sampleApron, type ApronField, type ApronSample } from "./apron";
@@ -1452,6 +1453,32 @@ function Player({
 
 /* ---------------------------------------------------------------------------- simulation */
 
+/**
+ * How far ahead of the runner a gust has to find clear road before the storm may take a lane.
+ *
+ * The desert's shove is meant to move the run with no key behind it: the storm takes a lane and the run
+ * has to take it back. What it must not be is a coin flip — a gust that lands the runner in a lane an
+ * obstacle is already standing in is a hit the player had no way to answer, and it reads as the game
+ * pushing them into the obstacle rather than as weather. So the storm still picks a direction first,
+ * and this decides whether the road will take it: if the lane it wants is occupied ahead, the gust goes
+ * the other way, and if both lanes are occupied it waits for the road to open. 22 m is over a second at
+ * every world's top speed and well over two at its opening pace: long enough to be a decision, short
+ * enough that the storm still reads as the road being taken from the player rather than as the storm
+ * waiting for a quiet moment.
+ */
+const SHOVE_CLEAR_METRES = 22;
+
+/** Is this lane clear for the next `SHOVE_CLEAR_METRES`, so a gust may take it? */
+function laneClearFor(obstacles: Obstacle[], lane: number): boolean {
+  return !obstacles.some(
+    (obstacle) =>
+      !obstacle.passed &&
+      obstacle.lane === lane &&
+      obstacle.z < PLAYER_Z &&
+      obstacle.z > PLAYER_Z - SHOVE_CLEAR_METRES,
+  );
+}
+
 /** What a run is played under when nobody said otherwise: the standard deal, in one place. */
 /**
  * The most line a run may carry, in numbers: 1,000 samples, which is 20 km.
@@ -1654,9 +1681,14 @@ function RunnerSimulation({
       ghost: ghostStatus.current,
       line: line.current.length / 4,
       // The mark itself — the one thing the ghost's numbers cannot prove: which lane the mesh on the
-      // road is actually standing in, and whether it is drawn at all.
+      // road is actually standing in, whether it is drawn at all, and whether the player has it switched
+      // on, because "not drawn" has two causes and only one of them is a bug.
       ghostMark: ghostMarker.current
-        ? { on: ghostMarker.current.visible, lane: laneAtX(ghostMarker.current.position.x) }
+        ? {
+            on: ghostMarker.current.visible,
+            enabled: markerEnabled(),
+            lane: laneAtX(ghostMarker.current.position.x),
+          }
         : null,
     });
     return () => {
@@ -1805,14 +1837,41 @@ function RunnerSimulation({
     // The desert's shove: one whole lane, and the run has to take it back. `shovesFor` counts how
     // many gusts the storm owes by now, so the rhythm is a function of the distance rather than of
     // the frame rate — and a frame that lands two is two lanes, in the right directions.
+    //
+    // Every gust is checked against the road before it lands (`laneClearFor`): the storm may take a
+    // lane, but it may not take the lane an obstacle is standing in, because that is not a hazard the
+    // player can answer — it is the game moving them into the thing that kills them.
     if (!over.current && hazard.kind === "shove" && hazard.phase === "active") {
       const due = shovesFor(hazard.since);
+      // The lane the winds are read against, carried through the loop: two gusts in one frame is two
+      // lanes, and React's state has not re-rendered between them.
+      let from = laneRef.current;
       while (shoves.current < due) {
         const wind = windFor(hazard.index, shoves.current);
+        const wanted = THREE.MathUtils.clamp(from + wind, 0, LANE_COUNT - 1);
+        if (wanted === from) {
+          // The storm is pushing into the edge of the road: there is no lane to take, and a gust spent
+          // on the kerb should not be saved up to land later.
+          shoves.current += 1;
+          continue;
+        }
+        const away = THREE.MathUtils.clamp(from - wind, 0, LANE_COUNT - 1);
+        // Named rather than written as `-wind`, because TS widens a negated `-1 | 1` to `number` and the
+        // gust's direction is what the world layer is told to lean by.
+        const windAway: -1 | 1 = wind === 1 ? -1 : 1;
+        const go: -1 | 1 | 0 = laneClearFor(obstacles.current, wanted)
+          ? wind
+          : away !== from && laneClearFor(obstacles.current, windAway)
+            ? windAway
+            : 0;
+        // Both lanes ahead are occupied: the gust holds until the road opens rather than landing the
+        // runner in one of them. It is still owed, so the storm lands it the moment it can.
+        if (go === 0) break;
         shoves.current += 1;
         gust.current = 1;
-        gustDir.current = wind;
-        setLane((value) => THREE.MathUtils.clamp(value + wind, 0, LANE_COUNT - 1));
+        gustDir.current = go;
+        from = THREE.MathUtils.clamp(from + go, 0, LANE_COUNT - 1);
+        setLane(from);
       }
     }
     gust.current = Math.max(0, gust.current - delta * 1.6);
@@ -2081,8 +2140,8 @@ function RunnerSimulation({
     /* ---- the best line, out on the road ----------------------------------------------------------
        The record holds where the best run *was* — its lane at each metre, and the distance it had
        reached at each second — so the ghost is two different things at once, and they answer two
-       different questions. The road shows the *line*: a ring and a standing mark in the lane the best
-       run held at the metre the player is at now, which is a thing to aim at rather than a rival. The
+       different questions. The road shows the *line*: a ring on the asphalt in the lane the best run
+       held at the metre the player is at now, which is a thing to aim at rather than a rival. The
        HUD carries the *race*: how many metres ahead or behind this run is of the best run at the same
        second, which is the only comparison of two runs that means anything. Neither is invented: both
        read the same quads, so the mark on the road and the number in the HUD cannot disagree. */
@@ -2091,7 +2150,9 @@ function RunnerSimulation({
     ghostStatus.current = sample ? { lane: sample.lane, ahead: ahead ?? 0 } : null;
     const marker = ghostMarker.current;
     if (marker) {
-      const shown = Boolean(sample) && !over.current;
+      // The mark is opt-in (`./marker`), read per frame rather than held in state so the switch in the
+      // pause overlay is felt the frame it is pressed.
+      const shown = markerEnabled() && Boolean(sample) && !over.current;
       marker.visible = shown;
       if (sample && shown) {
         marker.position.x = THREE.MathUtils.damp(marker.position.x, LANES[sample.lane], 6, delta);
@@ -2148,15 +2209,20 @@ function RunnerSimulation({
       <Roadside environment={environment} speedRef={speedRef} />
       <Player lane={lane} characterId={characterId} animation={animation} speedRef={speedRef} />
       {/*
-        The best line's mark: a ring on the road in the lane the best run held at this metre, moved
-        rather than re-rendered — it is one object, and a React state update per lane change would
-        render the whole content field for it. Additive and unlit on purpose: it is a memory of a
-        run, not another piece of the world's furniture.
+        The best line's mark: a ring on the road and a soft stand of light over it, in the lane the
+        best run held at this metre, moved rather than re-rendered — it is one object, and a React
+        state update per lane change would render the whole content field for it. Additive and unlit
+        on purpose: it is a memory of a run, not another piece of the world's furniture.
 
-        The ring used to be joined by a soft standing column of light, and that column read as a
-        cone-shaped object travelling with the player — which is not what a lane marker should look
-        like. The mark is the flat ring that says where the best line was; the race itself is the
-        HUD's number.
+        The whole mark is opt-in and off by default (`./marker`), because it is help: a player who has
+        not asked for the line to be drawn on their road should not have to work out how to ignore it,
+        and on a first visit there is no best run for it to point at. It stays mounted either way so
+        the development readout can report the mesh the switch controls, and `visible` is set per
+        frame from the preference.
+
+        The column is the part that reads as a cone standing on the road, and it is worth being
+        deliberate about: it is what makes the mark findable in a crowded frame at speed — which is
+        exactly what a player who switches it on is asking for — and it is off otherwise.
       */}
       <group ref={ghostMarker} position={[LANES[1], 0, PLAYER_Z]} visible={false}>
         <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={2}>
@@ -2166,6 +2232,17 @@ function RunnerSimulation({
             transparent
             opacity={0.4}
             depthWrite={false}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+        <mesh position={[0, 0.85, 0]} renderOrder={2}>
+          <cylinderGeometry args={[0.3, 0.46, 1.7, 14, 1, true]} />
+          <meshBasicMaterial
+            color="#8ffbe0"
+            transparent
+            opacity={0.16}
+            depthWrite={false}
+            side={THREE.DoubleSide}
             blending={THREE.AdditiveBlending}
           />
         </mesh>
