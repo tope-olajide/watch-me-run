@@ -155,4 +155,9 @@ models/**/*.fbx
 models/*/scene.gltf
 models/*/scene.bin
 models/*/textures/
+# Sound sources
+# The music bed ships as the 96 kbps encode (`sounds/bgm.mp3`, 1.4 MB); the 256 kbps download it was
+# made from is 3.7 MB and stays on disk, out of git. Re-encode with (any ffmpeg with libmp3lame):
+#   ffmpeg -i sounds/alba_mac-game-176807.mp3 -map_metadata -1 -codec:a libmp3lame -b:a 96k sounds/bgm.mp3
+sounds/alba_mac-game-176807.mp3
 reference/
