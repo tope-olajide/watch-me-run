@@ -11,7 +11,20 @@ import { audioEventPrompt, audioPrompt, eventPrompt, openingPrompt, type WorldVi
  * by a newer one never reached the world, and reporting it as a cause would be a lie about what the
  * player is looking at.
  */
-export type PromptCause = { event: WorldEvent; state: RunState };
+export type PromptCause = {
+  event: WorldEvent;
+  state: RunState;
+  chunk: number;
+  /**
+   * True when this ask is going out mid-chunk on the priority deadline rather than at a boundary.
+   *
+   * The deadline is the one sanctioned way a chunk's slot is spent twice: the ask that was already
+   * sent in this slot is overwritten before the model reads it, because the priority event it is
+   * making way for may not be dropped. The journal carries the flag so the audited runs can tell that
+   * deliberate trade-off from a gate that failed.
+   */
+  deadline?: boolean;
+};
 
 export type PromptSender = (prompt: string, cause?: PromptCause) => Promise<void>;
 
@@ -269,18 +282,24 @@ export class OrbisDirector {
       }
       const next = this.next();
       if (!next) return;
-      void this.emit(next.state, next.event);
+      // The override case — the timer slept past the chunk boundary because this ask has waited out
+      // its deadline — is marked so an audit can tell it from a boundary send.
+      void this.emit(next.state, next.event, hold === "chunk");
       // More than one ask waiting: the rest belong to the next slot, which the timer can wait for.
       if (this.pending.length) this.scheduleFlush();
     }, Math.min(cooldown, deadline));
   }
 
   /** One event, on both channels: the picture and the sound it makes. */
-  private async emit(state: RunState, event: WorldEvent): Promise<void> {
+  private async emit(state: RunState, event: WorldEvent, deadline = false): Promise<void> {
     const view: WorldView = { environment: state.environment, custom: this.custom() };
     await this.deliver(eventPrompt(state, event, view), audioEventPrompt(state, event, view), {
       event,
       state,
+      // The slot this ask is spent in, so the journal records the same chunk the gate above keys on
+      // rather than whatever the session snapshot happened to say at the send.
+      chunk: this.chunk,
+      deadline,
     });
   }
 
@@ -300,18 +319,31 @@ export class OrbisDirector {
     if (!send) return;
     if (prompt === (track === "audio" ? this.lastAudio : this.lastPrompt)) return;
 
+    // The slot is claimed *before* the send, not after it. `hold()` is the gate that spends a chunk's
+    // one ask, and a gate that closes only when the promise resolves is one two events in the same
+    // frame both pass: the runner can fire a near miss and a pickup in one update, and both asks
+    // would go out labelled with the same chunk — the first overwritten before the model read it.
+    // Claiming synchronously makes the second wait for the next boundary, which is what it is for.
+    const previousChunk = this.sentInChunk;
+    const previousAt = this.lastSentAt;
+    // The cooldown follows the picture, not the sound: the sound rides along with a visual prompt and
+    // never spends an ask of its own.
+    if (track === "video") {
+      this.lastSentAt = this.now();
+      this.sentInChunk = this.chunk;
+    }
+
     try {
       await send(prompt, cause);
       if (track === "audio") this.lastAudio = prompt;
       else this.lastPrompt = prompt;
-      // The cooldown follows the picture, not the sound: the sound rides along with a visual prompt
-      // and never spends an ask of its own.
-      if (track === "video") {
-        this.lastSentAt = this.now();
-        this.sentInChunk = this.chunk;
-      }
     } catch {
-      // Orbis is an enhancement layer. Gameplay must continue if a prompt fails.
+      // Orbis is an enhancement layer. Gameplay must continue if a prompt fails — and a failed ask
+      // did not spend the chunk it claimed, so the slot goes back for the next event to use.
+      if (track === "video") {
+        this.lastSentAt = previousAt;
+        this.sentInChunk = previousChunk;
+      }
     }
   }
 }

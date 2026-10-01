@@ -597,10 +597,10 @@ try {
       `${loaderReport?.surface}, ${loaderReport?.status}/${loaderReport?.video}, started ` +
       `${loaderReport?.started}, pinning ${loaderReport?.pinning}, timed out ${loaderReport?.timedOut}`,
   );
-  // A loader that gave up is a run in local world mode, and the measurements below would describe it
+  // A loader that gave up is a run over the local backdrop, and the measurements below would describe it
   // as if it were the generated one. That is a failure of this build, not of the comparison.
   if (loaderReport?.timedOut === "true" && loaderReport?.started !== true) {
-    console.log("!! the loader gave up before the world was armed — this run is in local world mode");
+    console.log("!! the loader gave up before the world was armed — this run is over the local backdrop");
     process.exitCode = 1;
   }
 
@@ -841,9 +841,15 @@ try {
   };
 
   // The control for the paused measurement below: the same pixels, same window, while the world is
-  // running. Without it a small paused number would be indistinguishable from a stalled video.
-  const runningDelta = await evaluate(frameDelta);
-  console.log(`world running: frames changed by ${runningDelta} over 2.5s`);
+  // running. Without it a small paused number would be indistinguishable from a stalled video. The
+  // chunk loop rests up to 3 s between chunks, so a 2.5 s window can land inside one and read 0
+  // while the world is producing; one retake makes that a control rather than a coincidence.
+  let runningDelta = await evaluate(frameDelta);
+  if ((runningDelta ?? 0) < 0.5) {
+    await sleep(1500);
+    runningDelta = await evaluate(frameDelta);
+  }
+  console.log(`world running: frames changed by ${runningDelta} over 2.5s (control; the chunk loop rests between chunks)`);
   console.log(`world sound:   ${await evaluate(audioReport)}`);
 
   // The pause overlay is the one panel that exists only when the player asks for it, drawn over a
@@ -856,20 +862,36 @@ try {
 
   // A pause has to reach the *model*, not just the game: the paused session stops producing chunks,
   // which is both what a frozen world should look like and the one lever that stops an open session
-  // from costing anything. `pause` takes effect when the chunk already in flight finishes, so the
-  // reported state is waited for rather than assumed, and the video clock is then timed — a clock
-  // that keeps advancing would mean the world was still generating behind a paused game.
+  // from costing anything. `paused` alone is not the state to break on: it is also how the chunk
+  // loop's rest between chunks reads, and stopping there reported the world as paused before the
+  // model had answered the press. The break waits for the player's intent (`pauseRequested`), the
+  // model agreeing (`paused`, not running) and a chunk index that has held still across two samples.
+  // `pause` takes effect when the chunk already in flight finishes, so the in-flight chunks are part
+  // of what the poll waits out, not evidence that the pause failed.
   let pausedSession = null;
-  for (let attempt = 0; attempt < 15; attempt += 1) {
+  let lastChunk = null;
+  let steady = 0;
+  for (let attempt = 0; attempt < 25; attempt += 1) {
     pausedSession = JSON.parse((await evaluate(worldState)) ?? "null");
-    console.log(`    pause poll +${attempt}s: ${JSON.stringify(pausedSession?.session ?? null)} hidden=${await evaluate(`document.visibilityState`)}`);
-    if (pausedSession?.session?.paused) break;
+    console.log(
+      `    pause poll +${attempt}s: ${JSON.stringify(pausedSession?.session ?? null)} ` +
+        `player=${pausedSession?.pauseRequested} hidden=${await evaluate(`document.visibilityState`)}`,
+    );
+    const chunk = pausedSession?.session?.chunk ?? null;
+    if (pausedSession?.pauseRequested && pausedSession?.session?.paused && !pausedSession?.session?.running) {
+      steady = chunk !== null && chunk === lastChunk ? steady + 1 : 0;
+      if (steady >= 1) break;
+    } else {
+      steady = 0;
+    }
+    lastChunk = chunk;
     await sleep(1000);
   }
   // A pause stops *generation*; the media element still has whatever the track already delivered, so
   // it plays that out and only then freezes. Measuring straight after the state flips reads a moving
   // picture and says nothing — hence the settle, and hence the running control above taken with the
-  // same code and the same window.
+  // same code and the same window. The chunk window starts from where the model stopped, since the
+  // poll above already waited out the chunks that were in flight when the press went in.
   await sleep(5000);
   const pausedBefore = JSON.parse((await evaluate(worldState)) ?? "null");
   const pausedClockA = await evaluate(videoClock);
@@ -941,14 +963,34 @@ try {
     const byChunk = new Map();
     for (const entry of records) {
       const key = entry.chunk ?? -1;
-      byChunk.set(key, (byChunk.get(key) ?? 0) + 1);
+      if (!byChunk.has(key)) byChunk.set(key, []);
+      byChunk.get(key).push(entry);
     }
-    const doubled = [...byChunk.entries()].filter(([, count]) => count > 1);
+    // The chunks that took two asks, with what they were: a count alone says a rule broke, not which
+    // events raced for the same slot. One of them is sanctioned: a priority ask that has waited out
+    // its deadline goes out mid-chunk on purpose (the entry says so), overwriting the ask that spent
+    // the slot. Those are listed separately; anything else doubled is the gate failing.
+    const pairs = [...byChunk.entries()]
+      .filter(([, list]) => list.length > 1)
+      .map(([chunk, list]) => ({
+        chunk,
+        asks: list.map((entry) => ({
+          reason: entry.reason,
+          at: entry.at,
+          deadline: entry.deadline ?? false,
+          prompt: entry.prompt.slice(0, 60),
+        })),
+      }));
+    const sanctioned = pairs.filter((pair) => pair.asks.some((ask) => ask.deadline));
+    const faults = pairs.filter((pair) => !pair.asks.some((ask) => ask.deadline));
     return JSON.stringify({ asks: records.length, chunks: byChunk.size,
       chunkRange: records.length ? [records[0].chunk, records[records.length - 1].chunk] : null,
-      doubled: doubled.length });
+      doubled: faults.length, ...(faults.length ? { where: faults } : {}),
+      ...(sanctioned.length ? { deadlineSends: sanctioned } : {}) });
   })()`);
-  console.log(`run prompts:       ${chunkSpend} (one ask per chunk; "doubled" counts chunks that took two)`);
+  console.log(
+    `run prompts:       ${chunkSpend} (one ask per boundary; "doubled" counts a chunk that took a second ask outside the priority deadline, "deadlineSends" lists the sanctioned mid-chunk override)`,
+  );
   if (JSON.parse(chunkSpend)?.doubled > 0) process.exitCode = 1;
 
   // What a horizon detector would actually see. Sampling the <video> straight into a canvas reads
