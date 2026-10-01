@@ -34,6 +34,26 @@ sandbox cannot make outbound connections, in which case its token route answers 
 an `AggregateError` while the identical function code works on the host and on Netlify.
 The game stays playable in that case and says so in the world chip.
 
+## Testing without Orbis (temporary)
+
+The run can be played without spending the account's session credits. One flag, one line:
+`src/orbis/orbis-switch.ts` exports `ORBIS_DISABLED`, currently `true` while the game is tested on
+its own. Flip it to `false` and reload to bring the live world back — nothing else changes, because
+the flag only decides whether `WorldLayer` is mounted:
+
+- no session is created, and the Reactor SDK is not even fetched (the layer is never rendered);
+- `src/orbis/LocalWorld.tsx` draws the local backdrop and publishes a chunk tick every two seconds,
+  so the director schedules its asks against the world's real cadence and the world-answers feed
+  keeps working;
+- `WorldLoader` skips the Orbis wait, so a run starts in about three seconds instead of waiting out
+  the loading fallback;
+- prompts are still built and journaled (`window.__orbisPrompts`), then dropped at the world bus.
+
+`node tools/orbis-off-probe.mjs` proves all of that against a dev server: no `.world-layer`, no SDK
+resource, the snapshot stays `idle`, a run starts in seconds and plays, and the feed still carries
+`TERMS · …`. The gameplay probes (`flow-probe`, `contract-probe`, `meta-probe`) pass unchanged with
+the switch on.
+
 ## How the world is wired
 
 One Orbis session, one `<video>`, one prompt channel — mounted above the interface and below
@@ -235,6 +255,50 @@ Design notes that matter if you touch this code:
 - The dive owns the world layer's transform while it plays and hands it back to the run at the end,
   which is why it finishes just above the resting scale instead of at a full push-in.
 
+### What the menu shows, and what the run screen keeps
+
+The menu is one screen and nothing on it is a scroll away. Its topbar carries the wordmark
+(`Watch.Me.Run`, the dots in the world's accent), the world chip, the sound control, and one button —
+**How to play** — and the controls, the terms, the scoring, the weather and what happens to an
+uploaded picture live behind that button in a modal that Escape closes. Below it: the worlds and the
+deals, the stage with the runner on it, and the picture upload, in three columns; the run button sits
+in a dock pinned to the bottom of the viewport with what the run will be. The instructions used to be a
+line under the picture and the sound a panel under that, which is two controls the player had to
+scroll to reach on a laptop; `.start-dock` is z-indexed above the backdrop for the same reason the
+button is at the bottom at all, because an overlay that paints over it swallows its clicks. Below
+1080 px the one-screen rule is dropped deliberately: the layout goes back to scrolling with a sticky
+run button, rather than shrinking a fixed-height grid until something falls off it.
+
+The run screen is the game, not the machinery. On screen while running: the score, the tokens (with
+the run's ramp), the distance, the hits left, the combo, whatever powerup is running, and the world's
+weather while it is here — the numbers a decision can be made from — plus one Exit button in the
+header. Hidden, with `display:none` and still mounted: the deal's name and terms, the pressure bar,
+the ghost race, the flow meter, the token ramp, the world chip, and the world-answer feed. They stay in
+the DOM because the probes and the dev readouts are built on them (`.hud-contract`, `.hud-flow-fill`,
+`.hud-ghost b`, `.director-card`), so a probe can still read a run's internals that the player no
+longer has to look at. Verified on a real run headless: the only cells with a box were
+`SCORE` / `TOKENS` / `DISTANCE`, the header held the Exit button alone, and none of the eight hidden
+blocks had a client rect.
+
+**A pause holds the whole page, not just the simulation.** `RunnerScene` stops the scene clock and
+remembers where it stopped (`clock.stop()` plus the held `elapsedTime`, restored on resume), zeroes
+`speedRef` and publishes `0` as the world motion, so the road scroll, the roadside and the world
+layer's parallax all stop with the runner. `RunExperience` sets `document.documentElement`'s
+`data-paused`, and `html[data-paused="true"] *` pauses **every** CSS animation on the page — the
+world layer's slow breathe and the screen-space weather included — because those are motion the player
+reads as the world still running behind the pause card. The keyboard handler returns early while
+paused, so a lane key pressed under the card cannot move a runner that is not being drawn. Measured on
+a real pause: two frames 1.2 s apart byte-identical, and `--run-speed` reading `0.000`.
+
+**The wall obstacle is scenery in both worlds, not a rectangle.** The desert's is a standing remnant —
+an eight-sided column with a chipped cap and a block fallen at its foot, flat-shaded stone — because a
+tall flat rectangle standing in the sand reads as a bug in the world rather than as part of it. The
+city's is a lit barrier: a dark plinth and panel between two neon edge strips and a bar across the top,
+which keeps the silhouette the avenue already reads as a wall and gives the player something lit to
+see it by. The city's jumpable obstacle got the same treatment, one lit bar on its face. Read out of
+real frames headless as pixel shares: the desert run is **94% warm, 0% cyan**, the city run **27%
+cyan, 1% warm**.
+
 ## Three worlds, three tempos
 
 The worlds differ in how they *play*, not only in how they look. Each one has its own speed ramp,
@@ -289,6 +353,15 @@ Two files carry the wiring: `src/game/character-catalog.ts` (ids and labels) and
 `src/game/RunnerCharacter.tsx` (the `?url` import, the mixer, the crossfades). Only the selected
 runner's file is fetched — the menu pulls it when the card is picked and the run reuses it from
 cache — so a visit downloads 2–3.4 MB of character, not all three.
+
+**The runner is normalised in its own space.** Every rig is authored at its own scale, so the model is
+measured and scaled to a 2.35 m runner with its feet at zero. The measurement is a walk down the
+model's children multiplying local matrices, cached by `model.uuid` (`normalisedSize`), rather than
+`Box3.setFromObject`: that reads *world* space, and on a remount — which is what "Run again" is — the
+previous attempt's group is still attached when the new one measures, so the runner was being
+normalised against an already-scaled copy of itself and came back visibly enormous. Measured with
+the dev readout `window.__runnerSize()`: the same scale `0.01595` and the same foot height before and
+after a retry, drift `0` on both.
 
 **Two rigs, one model.** A run is shot from behind — the camera sits above and behind the player, and
 the runner faces away down the road — so `RunnerCharacter` turns the model 180° by default. The menu
@@ -360,6 +433,425 @@ props from whatever is in `models/`.
 | `↑` / `W` | Jump |
 | `↓` / `S` | Slide |
 | `Space` | Pause / resume |
+
+The same table is in the game, behind **How to play** in the menu's topbar — with the scoring, the
+terms you can run under, the weather, and what happens to a picture you upload — so the player can
+read it without leaving the screen the run starts from. `Space` holds the whole page, not just the
+runner — the scene clock, the road's scroll and every CSS animation stop with it (see *What the menu
+shows, and what the run screen keeps*, above).
+
+## Sound
+
+Two files in `sounds/` are the game's own sound, sitting beside the world's: a music bed (`bgm.mp3`)
+and a token pickup (`koiroylers-get-coin-351945.mp3`), wired in `src/game/audio.ts` and mixed by hand —
+the bed at 0.45 under the pickup's 0.75, because a run takes tokens by the dozen and the effect is the
+one that is supposed to be noticed.
+
+The bed is a **96 kbps encode of the 256 kbps download it came from**: 1.39 MB instead of 3.72 MB, the
+same 1:56 at 48 kHz joint stereo, which is the difference between the soundtrack costing a third of
+the game's audio weight and a tenth of it. The source stays on disk and out of git (the
+`.gitignore` carries the rule) the way the FBX rigs and the 107 MB model scenes do, with the command
+that reproduces the encode written beside the rule. Nothing in the game reads the source.
+
+**The soundtrack starts on the first gesture and does not stop.** A browser will not start audio
+without one, and the menu deliberately asks Orbis for nothing — so by the time a run begins, the click
+on Start is 20–40 s of loading screen behind it and no longer counts as a gesture. `installAudioUnlock`
+(called from `src/main.tsx`) therefore arms the track on the first `pointerdown` or `keydown` anywhere
+in the page, and removes itself once the music has actually started; a refusal leaves it armed, because
+a policy that rejects this click may accept the next one. From there it runs through the menu, the dive
+and the run as one continuous track — a run does not restart it, and muting does not stop it either,
+so unmuting needs no second gesture.
+
+**Every change of level is a fade, not a jump.** The element is never *set* to a level, it is moved to
+one: 1.6 s on the way in, because the track has to arrive under a player who is reading the menu
+rather than land on top of them, and 320 ms for mute, unmute and the slider, where a long ramp would
+read as the control being broken. The ramp is driven from `requestAnimationFrame`, so it is tied to the
+tab's own clock — a backgrounded tab stops fading rather than racing to the end of a timer — and a ramp
+already in flight is abandoned rather than queued, which is what lets a fade-in be caught mid-way by a
+mute and fade out from wherever it had got to. The pickup is not faded: it is a one-shot a few hundred
+milliseconds long and its level is decided when it plays.
+
+**The pickup is heard as it is scored.** `playCoin` fires from the same `onToken` callback that pays
+the token and fills the HUD, so the sound cannot drift from the token it belongs to. It plays through a
+pool of four voices rather than one element, because restarting a single element cuts the previous
+pickup short and a run can take two tokens inside a second.
+
+**What the settings move, and what they do not.** One mute switch and one slider, in the menu and in
+the pause overlay, are the *same* control (`src/game/SoundSettings.tsx` reading one store in
+`src/game/audio.ts`) rather than two that agree by convention — the two surfaces cannot disagree about
+how loud the game is. Both persist under `watchme-run:sound` and are validated on read, so a stale or
+hand-edited value cannot open the page at 400%. What they move is the game's two sounds; Orbis's
+generated soundtrack belongs to the world and is left alone, which is what the panel's own label says
+out loud. The track keeps playing while the game is paused: it is the game's, not the world's, so a
+pause does not have to sound like the end of the run.
+
+Verified on the headless probe under Chrome's real autoplay policy (no `--autoplay-policy` flag, and
+every control driven by trusted input rather than `element.click()`, which is not a gesture): no music
+element exists before the first interaction; one real click starts it and its level **climbs** —
+measured at 0.171 then 0.270 as the ramp ran, against a target of 0.270 (`0.6 × 0.45`), rather than
+appearing at the target — and it loads `bgm.mp3` and reports its duration as 116.16 s, which is the
+encode and not the source; mute catches it mid-ramp and takes it the same way down (0.219 → 0.114 → 0
+over about 320 ms), and an unmute returns it (0.047 → 0.152 → 0.270); a mute 260 ms into a *fresh*
+fade-in, when the level had reached 0.028, fades out from exactly there rather than jumping; both mute
+and volume persist, the slider to 25% leaves the element at 0.1125 and survives a reload with the panel
+showing 25%; in a run with four tokens collected the pickup pool is live and the track is still
+playing; and the pause overlay carries the same panel at the same value. The audio is now 1.5 MB in
+total, where the source track alone was 3.7 MB.
+
+**One bug the fades hid, and what found it.** The ramp clamps its progress now, and the reason is worth
+writing down: an animation frame's timestamp is the frame's *own* start time, which can precede the
+`performance.now()` that scheduled the fade, so the first callback can compute a progress a hair below
+zero. On the way down that is invisible — the value stays inside the ramp — but on the way *up from
+silence*, which is unmute and only unmute, it asks for a negative `volume`, and
+`HTMLMediaElement.volume` refuses it with an `IndexSizeError` in the console. It was caught by
+`tools/flow-probe.mjs`, a probe about the score ceiling, because that probe treats any console exception
+as a fault. Verified after the fix by driving the real toggle: mute 0.216 → 0.159 → 0.092 → 0.024 →
+0.000, then unmute from exactly silence 0.000 → 0.076 → 0.140 → 0.245 → 0.270 with no exception.
+
+## Stakes, and what the world is answering
+
+The run used to be unloseable. `damage` accumulated (`dangerLevel` was exactly `damage / 3`), the combo
+reset on a hit, and then you carried on: a run could not end, so the escalation the game was modelling
+was decorative, and a score was a receipt rather than a target.
+
+**Three hits end it** (`MAX_DAMAGE` in `src/game/run-state.ts`). The third sets the run over, the
+simulation winds the world down rather than stopping it — `speed` damps to zero, so the roadside, the
+world layer's parallax and the runner's cycle all slow on their own curves — and the defeat pose holds
+instead of a runner jogging on the spot behind its own game-over card. `run_ended` is published as the
+run's last event; the director still ignores it on purpose, because a run that is over has nobody left
+to steer for, and the hit that ended it already went to the world as `damage_taken`.
+
+**Run again is a remount, not a reload.** `RunnerScene` keys the simulation on `attempt`, so a restart
+re-initialises every ref the run owns — state, obstacles, coins, timers — while the canvas, the world
+layer and the session stay exactly where they were. Measured: the card appears, "Run again" clears it,
+the HUD is back at 0 m with three pips, and `data-surface` never leaves `run` — no loading screen, no
+new session, no re-priming the world.
+
+**The record is per world** (`src/game/records.ts`), because the three worlds are not comparable —
+different paces, different obstacle recipes, different token curves (`difficultyMeters`), so one global
+best would be the desert's by construction and would quietly tell a player their forest runs do not
+count. It is `localStorage`, read validated and written best-effort, and it appears on the world card
+that picks it. A first run *sets* the record rather than beating one: saying "new best" over the only
+score on the board is the kind of small lie that makes a number meaningless. Measured with a seeded
+record of 4,321: the card reads "Best here is 4,321 over 1234m", a 484-point run does not overwrite it,
+and the menu chip shows it.
+
+**What the HUD was not showing.** The vitals row carries the three things the simulation computed and
+the interface hid: the hits left, the combo, and the pressure. `combo` is the one that matters most —
+it decides the world's posture (`playerStyle`, which is what makes the prompts change their posture
+too), and it was invisible, so the game's whole premise was legible only to someone who read the
+source. The pressure bar is `dangerLevel` read back as what the world is doing about it, and it is
+named for the hazard that world advertises on its menu card (*Sandstorm*, *Blackout*, *Fog*) — the
+cheapest possible way to make the promise and the meter the same thing. Measured live: `×5` combo at
+`0.67` pressure on the second hit, all three pips spent at the end.
+
+**The card says what the world answered, not what was asked of it.** `dir.deliver` now hands the cause
+(a `PromptCause`: the event, and the run state it was read from) back to the sender, and `RunExperience`
+turns it into a feed — *NEAR MISS ×2* → *the world leans in* — with the prompt itself kept underneath,
+clamped, as the evidence. The cause travels through the director rather than being guessed at in the
+interface because the director is what decides whether an ask is *spent*: an event held for a chunk and
+replaced by a newer one never reached the world, and reporting it as a cause would be a lie about what
+the player is looking at. The menu's opening shot and the run's launch carry no cause, for the same
+reason — they are not answers to anything the player did. Measured live: the feed is empty at the line,
+holds one entry after nine seconds (one ask spent — one prompt per chunk, on an 1.8 s cooldown), and
+empties again the moment a new run starts.
+
+## Three things worth picking up
+
+The run had one pickup already — the coin — and a coin cannot change a run. It is on the line you are
+already running down, it asks for nothing, and its only pressure is the greedy mistake of leaving the
+correct lane to collect it. So the field gained three verbs that do change one, each answering a
+specific way a run goes wrong:
+
+| pickup | what it does | how it reads |
+| --- | --- | --- |
+| **shield** | the next hit is spent on it instead of on `damage` — no pip, no combo reset | a pale blue octahedron |
+| **magnet** | for 9 s, coins within 14 m bend into whatever lane the run is in | a pink horseshoe, face kept to the camera |
+| **double** | for 11 s, the token curve pays twice | a gold pair of cubes, because it is the one pickup whose meaning is an amount |
+
+**The rhythm is planned in distance, not in chunks.** `POWERUP_SPACING = 165` is the spacing the field
+aims for, and `buildPattern(..., wantsPowerup)` places one in whichever chunk crosses that distance —
+on the coin line (`POWERUP_Y = 1.05`), in a lane the coins already hold (`pickCoinLane`), so a pickup
+never asks for a move of its own the way a high coin or a gate does. Measured over eight runs: the gap
+between one pickup and the next is 160–250 m, median 191. The 165 m is a floor on the spacing, not a
+metronome: a chunk is the smallest unit the field can put a pickup in, and a chunk is 30–60 m of road.
+
+**A magnet pulls, it does not collect.** The coin is damped towards the runner's lane rather than
+teleported into the score, so it still has to arrive — which is why `Coin.x` is an offset from a lane
+rather than a position: the coin is still a coin *in the lane it was placed in* to every other rule in
+the run, and the pull is only a render-time bend. Measured in one session: 664 samples of coins sitting
+off-centre while a magnet was up, including a full 4.8 m crossing from lane 0 into lane 2.
+
+**A doubled token is doubled by the same expression that pays it** — `coinValueAt(...) * (state.doubleTokens > 0 ? 2 : 1)`
+— so the number above the runner's head and the score in the bank cannot disagree about what a coin was
+worth. The `×2` is deliberately *not* a separate scoring path. Measured over 342 tokens in one session,
+reported against the curve's own value at each collection distance: every doubled token paid exactly
+twice it, every plain token exactly once it, worst difference 0.
+
+**A shield is taken before `damage` moves.** It is checked in the collision branch the hit lands in, so
+the stumble, the impact shake and the world's answer are the same as any other hit — what changes is
+that no pip is spent, the combo survives, and the simulation publishes `powerup_spent` instead of
+`damage_taken`. Measured: shield collected at 398 m with damage 0, spent at 427 m with damage still 0.
+
+**The HUD wears the pickup's own colour** (`.hud-pickup`, one border and one word per verb), counts the
+two clocks down, and reserves nothing: a run with no pickups running draws exactly the row it drew
+before they existed. The shield is the one that has to be on screen the whole time it is up, because it
+is invisible until it saves you.
+
+**The world answers all four moments, per world.** `eventFragments` gained `powerup_collected` and
+`powerup_spent` for desert (the ruins pulse, then die back to embers), city (neon flares, then stutters
+out) and forest (glowing plants brighten, then go dark as the fog closes), and `audioEvents` gained a
+bright chime and a glassy shatter. All of them obey the same two rules as every other fragment — no
+figure in the frame, no camera move — and `npm run check:prompts` now builds and scans them with the
+rest (204 picture prompts, 54 captions).
+
+**One bug worth recording, because it was invisible from the game.** The director keeps exactly one
+pending event, and a routine event is allowed to overwrite a routine one — correct for near-miss
+chatter, fatal for a pickup, which fires once and then says nothing for a while. Measured before the
+fix: **one pickup answer in 99 feed entries**, across a session that collected dozens of pickups. The
+fix is `isPlayEvent` in `src/game/run-state.ts` (pickups, a pickup spent, a hit, a tier crossing) and a
+default in the director's `trigger`, so a player-caused moment claims the slot and the world's own
+weather cannot displace it. Measured after: **19 pickup answers in 105 entries**.
+
+`window.__runfield()` (development only) reports the field in front of the runner — pickups with their
+lane, obstacles, the coins a magnet has bent and by how much, the two clocks, and what a token is worth
+at this distance — and `tools/pickup-probe.mjs` plays a real run with an autopilot that dodges, chases
+pickups, and walks into an obstacle on purpose when a shield is up, then checks every claim above
+against the simulation's own numbers rather than against a screenshot.
+
+## The world's own weather
+
+Every world already promised one. The menu card sells the desert as *Sandstorm*, the city as
+*Blackout*, the forest as *Fog*, and the pressure meter on the HUD is named for it — and nothing in the
+run ever did it. The hazard is that promise made playable, and the reason to play a second world: each
+one attacks a different channel.
+
+| world | hazard | what it attacks |
+| --- | --- | --- |
+| desert | **Sandstorm** | *where you are* — gusts push the runner a whole lane sideways |
+| city | **Blackout** | *what you can see* — the city's power fails and the lane markings go dark |
+| forest | **Fog** | *how far ahead you can plan* — the distance closes in to about 44 m |
+
+**The schedule is measured in metres of run**, not seconds, for the same reason the pickups are: a slow
+world and a fast one should meet the same weather for the same run, and a paused run must not burn
+through a storm behind a pause screen. The first hazard waits for **240 m**; the warning band is 60 m;
+the storm lasts 150 m at the line and 150 + `difficulty × 60` by the end of the curve; the spacing
+between one warning and the next is 600 − `difficulty × 140`, floored so the quiet never disappears.
+Intensity is *continuous* at every join (0.35 rising to 1 and back to 0.35, then out to zero), because
+weather that switched on would read as a bug in the lighting rather than as the world turning.
+
+**The warning is the interface's, the answer is the world's.** For 60 m before it lands the hazard has
+a name on the HUD (`Sandstorm / incoming`, in the milestone gold, pulsing) and the sky is already
+staining; the world itself is asked once, on arrival, as `hazard_started` — a play event, so it cannot
+be displaced by the milestone chatter. Each world has its own fragment and its own camera hold — a wall
+of sand sweeping the horizon, every light in the city failing at once, fog rolling across the ground —
+and its own sound caption. `npm run check:prompts` builds and scans all of it with the rest.
+
+**The shove is one whole lane, not a drift.** The runner's lateral position is a lane, so a continuous
+push would be a state the simulation does not have (and a runner hanging between two lanes is a
+collision the player cannot reason about). A gust takes a lane and the run has to take it back — and the
+direction alternates with the hazard's index, so a storm walks the runner one way and then the other.
+Measured in one desert storm: four lane changes with no key pressed, alternating 1→0, 0→1, 1→0, 1→2.
+
+**The blackout takes light, and light is information.** The road's and the apron's own materials are
+driven down to 30% of their graded colour — the lane markings are painted into the colour map, so the
+cost is exactly the thing the ground was giving away for free — and the roadside panels, which carry a
+frame of the live world, go out with the rest of the city. Measured on the composite frame, against a
+control pair: two clear frames 1.2 s apart read **41.2** and **39.0** mean luma (that 2.2 is the world's
+own drift), and the peak reads **22.8**.
+
+**The fog closes the road's own planning distance.** The WebGL fog is created with the scene and parked
+past anything the run can see, so nothing recompiles when the weather pulls it in — a hitch in the
+middle of a hazard about visibility would be the one thing the hazard must not be. At a hard run's peak
+it closes to 44 − `difficulty × 10` m from the camera, which is inside the road's own fade (full at
+40 m, gone at 83 m), and the near plane is held well past the runner so the character being steered
+never becomes a smudge. Measured the same way: **49.4** and **51.1** clear, **90.8** at the peak.
+
+**A sandstorm that does not haze the distance is a colour cast**, so the desert gets its own, gentler
+fog — the far layer softening to about 140 m — on top of its scrim. Measured: **76.6** and **77.0**
+clear, **91.9** at the peak (the desert is a bright world whose honest drift is 0.4 luma between two
+clear frames, so the storm is the whole of the change).
+
+**The weather over the picture is a screen-space scrim**, and it has to be: the generated world is a DOM
+video *behind* the WebGL canvas, and a treatment that covered only the road would be a game effect
+happening in front of a sunny world. The simulation publishes `--weather` (the intensity) and
+`data-hazard` / `data-hazard-phase` on `:root`, throttled to real changes, and `.hazard-layer` — one
+inert div — draws whichever of the three treatments applies. During the warning the same layer pulses,
+which is how the sky changes before the weather lands.
+
+**One ordering bug, and what it cost.** The director's pending queue delivers one ask per slot, which is
+right — and a run's routine traffic (a near miss every second) kept taking the next slot, so a storm's
+answer could sit behind it for a hundred metres: measured, the sandstorm arrived at 302 m and the world
+answered it at **396 m** — and in the city and the forest the run was over before the answer went out at
+all. Now a play event waiting in the queue *claims* the next slot: routine events arriving behind it
+wait their turn instead of spending it. Measured after: arrival 302 m, answer **325 m**. The routine
+events are not lost — they are the queue's tail, and they are still replaced by each other rather than
+queued, because a distance milestone from four seconds ago is not news.
+
+`tools/hazard-probe.mjs` plays each world until its weather has been seen, answered, and photographed —
+restarting through the card when the hazard ends the run, which is allowed to happen — and brackets the
+picture with two clear frames a second apart against the peak frame, so the numbers above are a change
+and not a drift. `window.__runfield()` reports the phase, the intensity, how many hazards the run has
+announced, and the lane, which is where a shove shows up without a key behind it.
+
+## The skill ceiling
+
+A run could always be *long*, and the only way to be good at it was to survive. Two things make it
+possible to be good: a **flow** value that near misses and threaded gaps build and a hit wipes, and the
+one moment the game slows down for — a gap taken between two obstacles in the adjacent lanes at once.
+
+**Breaking even is a rhythm, and the constants are set so it is.** A near miss adds 0.15; the meter
+drains at 0.03 a second. A player who takes a near miss every five seconds holds a steady meter; the only
+ways up are to be close to things more often or to thread the gaps. The first values tried were 0.1 and
+0.045 a second, and the measurement is worth keeping: **seventeen near misses left the meter pinned at
+0.13** — a ceiling nobody could reach, which would have made the whole feature a decoration. A hit wipes
+it outright: the meter is the run's *form*, and a hit is the end of it.
+
+**Flow pays, in the same arithmetic the road already used.** The distance trickle is
+`12 + flow × 18` points a second, so the *same* road pays up to two and a half times as much for the same
+second of running — and the HUD says the multiplier (`×1.0` → `×2.5`) rather than the raw number, because
+the player's question is "what is this worth now". Measured over one run of 2,000 m, with every token
+subtracted by timestamp (coins pay separately and are not part of this claim): **112 s held at
+flow ≈ 0.97 paid 29.5/s**, against a low-flow window at **12.16/s**. The formula predicts
+12 + 0.97 × 18 = 29.5. Two and a half minutes of a real run agreeing with an arithmetic line to a tenth
+of a point is the whole reason the trickle is a formula rather than a feeling.
+
+**The perfect gap already existed in the content — as a complaint.** The `pair` shape blocks two lanes
+and leaves one open, and its own comment records that the middle-open case was *discouraged*: "a pair
+that opens the middle asks a runner already there for nothing at all". The skill ceiling is that nothing
+turned into the game's best moment: two obstacles in the side lanes at the same z (within 4 m), the run
+in the middle, and it has threaded a gap. `pair` opens the middle one time in three, so it is a shape to
+read for rather than to farm.
+
+**Threading slows time, and it slows *time* rather than speed.** For 0.42 s the run's clock drops to
+0.45: the content field, the roadside scroll and the runner's cycle (all driven by the speed the
+simulation publishes) slow with it, the token clocks run on the same clock — so a moment of slowness is
+not a free eleven seconds of doubled tokens — and the distance trickle slows with it, because the trickle
+is the ground paying for a second of *run*. The camera dollies 0.9 m closer and eases back out. Nothing
+rolls or whips: the generated world is locked to the frame, and the one thing this rig may not do is turn.
+
+**A slow-motion moment has a cooldown of 90 m**, because farming the middle is exactly what a player who
+has read this far would do: `pair` leaves the middle open one time in three, and a run that only ever sits
+there would spend a fifth of its life in slow motion. The thread still counts, still pays flow, and still
+gets the world's answer while the flourish is on cooldown.
+
+**The world answers a thread with a held breath** — the only answer in the game that is not an escalation:
+the blowing sand stalls and the ruins sharpen, the rain hangs in the air and the far avenue goes still,
+the fog thins and the far trunks come back — with its own sound caption. The feed line is
+`GAP ×N — the world holds its breath`, and the end card keeps the count (`GAPS`) with the score and the
+tokens.
+
+`tools/flow-probe.mjs` plays a run to *seek* the good moments: it dodges only what is in its lane, holds
+the middle whenever two side lanes are blocked at the same z, and then reads the claims back out of
+`window.__runfield()` — the flow value, the gap count, the run's own clock and where the camera has been
+dollied to. Measured in one forest run: **12 gaps threaded**, the clock at **0.48–0.53** through eighteen
+samples, the camera down to **10.37 m** (from 11.5), the feed carrying `GAP ×2` through `GAP ×12`, and the
+trickle numbers above.
+
+## The deal you take
+
+A run was one difficulty for everyone. Now the interface offers **four deals**, and every one of them is
+a number the run already had: how many hits it survives, what a token pays, how fast the flow meter
+fills, and whether the world is allowed to bring its weather.
+
+| Deal | Hits | Tokens | Flow | Weather |
+| --- | --- | --- | --- | --- |
+| Standard | 3 | ×1 | ×1 | on |
+| Close quarters | 2 | ×1.3 | ×1.5 | on |
+| Glass cannon | 1 | ×1.6 | ×1.2 | on |
+| Fair weather | 3 | ×0.9 | ×0.75 | **off** |
+
+The deal is chosen before the line and travels as one object — `RunTerms` — into the simulation, which
+reads the terms instead of the constants: the run ends at `terms.hits` rather than `MAX_DAMAGE`, a token
+pays `coinValueAt(…) × terms.tokenScale`, a near miss adds `0.15 × terms.flowScale`, and
+`hazardAt(…, terms.hazards)` returns `CALM` for a world that has agreed not to bring its weather. The HUD
+chip names the deal and draws its pips from the same hit count the simulation ends on, so the display and
+the rule cannot drift apart.
+
+**The measurement is the point, because a contract that only changed a chip would look identical.**
+`tools/contract-probe.mjs` plays each deal — including Glass cannon *deliberately into the traffic*, since a
+one-hit limit can only be tested by taking the hit — and reads the run's own numbers back out of
+`window.__runfield()`. Measured over one run per deal, live: **every token paid at its deal's exact
+scale** (13 tokens at ×1.0 under Standard, 2 at ×1.6 under Glass cannon, 20 at ×0.9 under Fair weather,
+2 at ×1.3 under Close quarters); **Glass cannon ended on the first hit** (1 of 1 allowed) and Close
+quarters on the second (2 of 2), while Standard and Fair weather ran on; **Fair weather produced no hazard
+phase at all** across 400 m — no badge, no start, nothing but `calm`; and the flow gained per near miss
+measured **0.14–0.15 under Standard against 0.22 under Close quarters**, which is the 1.5 it claims. The
+world answers every deal in its own voice: `TERMS · <name> — the world agrees to the deal`.
+
+**The announcement nearly wasn't.** Getting the world to say which deal you took turned out to be the
+hardest part of the feature, and the failures are all measured rather than guessed. Announced from the
+simulation's clock, the ask landed inside the window that discards asks (zero `TERMS` lines across four
+runs); moved to the interface's clock after the dive's quiet window, it landed inside the *cooldown*
+behind the run's first routine ask; and even when it reached the queue it could be evicted, because the
+chunk that read the dive prompt can stay the current chunk for a whole run — measured in the forest: the
+ask waited for a boundary that never came, the run ended, and the run's own teardown cleared the queue.
+Three changes came out of that, each one a rule rather than a patch: the deal is **asked again until the
+feed shows the world answered it**; a **priority ask that has waited longer than 3.2 s goes out mid-chunk**, where it is still the newest prompt in force because the chunk hold keeps every other ask behind it;
+and the same ask arriving twice **replaces its predecessor instead of queueing a copy**, so the retry can
+never push a play event out of the slot to repeat itself. The probe now leaves a one-hit deal played
+straight into the traffic out of the verdict — a run that is over in seconds has no announcement to miss —
+and requires it of the runs that last.
+
+```bash
+node tools/contract-probe.mjs http://[::1]:5199/            # all four deals
+ONLY=glass node tools/contract-probe.mjs http://[::1]:5199/ # one deal, while iterating
+```
+
+## What a run leaves behind
+
+A run used to leave one thing: a score in a world. Now it leaves two, and the second one is the more
+interesting of them.
+
+**A line, not just a number.** Every 20 m the run writes down where it was — `distance, lane, score,
+time` — and a run that sets a best files that line with the record (`watchme-run:records`). A best of
+1,800 m says *what* happened; the line says *how*, and it is the only way a later run can be set against
+it. The line is all-or-nothing on read: half a line would put the ghost in lanes the best run never held,
+and any record written before lines existed (or hand-edited) reads as an ordinary best with nothing to
+race.
+
+**On the road, the line; in the HUD, the race.** Two different readings of the same quads, because they
+answer different questions. The road carries a mark — a flat ring on the asphalt, additive and unlit —
+standing in the lane the best run held at the metre the player is at now; it is a thing to aim at, not a
+rival, and it slides across the lanes the way the record did. The ring used to be joined by a soft
+standing column of light, and that column read as a cone-shaped object travelling with the player rather
+than as a mark on the road; the mark is now the ring alone. The HUD carries the comparison that
+actually means something between two runs: **metres ahead or behind the best run at the same second**,
+read by interpolating the line's times. Green is ahead, a dim red is behind. The moment a run is a whole
+metre up on its best — once per run, and not in the opening metres, where the launch surge would beat any
+line — the world answers: `BEST LINE BEATEN — N m up on your best run`.
+
+**And tokens now outlive the run that earned them.** Every run banks what it collected
+(`watchme-run:bank`), and the deals are bought with the balance: Fair weather 400, Close quarters 500,
+Glass cannon 1,200, Standard free. The two halves are deliberately in different places — the picker
+inside a run only *chooses*, because the player there is mid-decision and a price with a balance under
+it would turn a run into a shop, while the buying lives in the menu, on the screen every run starts
+from. That is what makes the deals a decision about more than one run: the deal that pays the most
+tokens is the deal that survives the fewest hits, so the bank is fed by exactly the runs the record
+punishes, and the chip a player cannot take is a target rather than a wall.
+
+**Measured, in one probe run of the whole loop** (`tools/meta-probe.mjs`, forest, two runs): the first
+run banked **exactly its 8 tokens** and the card said `BANK +8`; its line filed **14 samples for 252 m**,
+evenly spaced at 20 m, every sample further and later than the one before it, and ending **0 m short** of
+the distance the record claims; with a balance seeded at 500 the 1,200-token deal stayed shut while the
+500-token one could be paid for, and paying took **exactly 500** (bank 500 → 0), wrote the deal, opened
+the chip and took it; the second run was shown the ghost in **192 samples**, the ghost's lane matched the
+stored line at **191 of 191 checks**, the mark on the road was drawn and standing in that same lane at
+**188 of 188 reads** — the mesh checked, not just the numbers, because a marker the scene never received
+would leave every other reading perfectly correct — the HUD's race number stayed within three metres of
+the readout's own gap in **172 reads** (that gap is the HUD's five refreshes a second, not a
+disagreement), and the world answered `BEST LINE BEATEN — 1 m up on your best run`.
+
+**The probe found a bug the eye could not.** A run winds down rather than stopping — it coasts to a halt
+behind its own card — and the road it coasts over is still full of tokens. Collected anyway, the HUD's
+token count went on ticking *past* the number the run had already filed and banked: one run filed 8
+tokens while the HUD reached 9, two numbers describing the same run and disagreeing. Coins and pickups
+now stop being collected the moment the run is over, which is the same rule the distance trickle already
+followed — a finished run earns nothing more.
+
+```bash
+node tools/meta-probe.mjs http://[::1]:5199/   # bank, line, ghost, purchase; or WORLD=city
+```
 
 ## Running in your own picture
 
@@ -867,6 +1359,67 @@ console, which is what a broken instanced mesh looks like.
 
 ```bash
 node tools/roadside-probe.mjs http://[::1]:5199/ "$TEMP"   # or WORLD=city for one of them
+```
+
+`tools/pickup-probe.mjs` plays a real run with an autopilot — it dodges what is in its lane, steers
+towards the next pickup, and, once a shield is up, deliberately stops dodging and walks into the next
+obstacle — and checks the pickups against the simulation's own numbers instead of a screenshot. The
+readout behind it is `window.__runfield()`, which reports the field *in front of* the runner (pickups
+with lane and position, obstacles, the coins a magnet has bent and by how far), the two clocks, and
+what a token is worth at this distance from the same `coinValueAt` the scoring uses. Beside it,
+`window.__runnerSize()` reports the scale and foot height a runner resolved to, which is the readout
+that turns "the runner came back the wrong size after a retry" into the two numbers to compare. Evidence is
+gathered from three places — that readout, the HUD's `.hud-pickup` chips with their countdown text, and
+the director feed together with the `+N` token readout, both watched as events with observers — and it
+is accumulated across restarts, because one run is not long enough to meet three pickups. It exits
+non-zero on a cadence outside 130–205 m, a kind that never appeared, a pickup the world never answered,
+a shield spent without a `SHIELD SPENT` line, a magnet that never bent a coin, a token paid off the
+curve, or a HUD with no chip on it.
+
+```bash
+node tools/pickup-probe.mjs http://[::1]:5199/            # or WORLD=city, DEADLINE_MS=600000
+```
+
+`tools/hazard-probe.mjs` does the same for the weather: a run per attempt (restarting through the card,
+because a hazard is allowed to end a run), an autopilot that only *dodges* — so a lane change with no
+key press behind it is unambiguously the storm's — and the HUD badge, the `:root` attributes, the feed
+and the lane read from `window.__runfield()` as it goes. Its frames are a bracket: two clear ones
+1.2 s apart for the world's own drift, one at the peak, one after it has passed if the run lived. It
+ends with the `frame-report.mjs` lines that turn the bracket into the numbers quoted above.
+
+```bash
+node tools/hazard-probe.mjs http://[::1]:5199/            # or WORLD=forest, ATTEMPTS=3
+```
+
+`tools/contract-probe.mjs` plays the deals rather than the world: each one taken from wherever the player
+happens to be — a pause, or the card — and then the deal's own claims read back as numbers, the chip and
+its pips against the hit count, every `token-gain` against `window.__runfield()`'s own curve at that
+moment, the highest damage against the deal's limit (Glass cannon is steered *into* the traffic, because a
+one-hit deal can only be tested by taking the hit), the hazard count under Fair weather, and the flow gain
+per near miss bucketed by deal. The feed is recorded from the DOM as it renders, at the observer callback,
+so an answer that arrives while the card is remounting is still counted — a distinction that mattered: a
+reader watching added `<li>` nodes only, and not their subtrees, missed the deal's acknowledgement three
+runs in a row and made a working feature look broken. A phase that was over in seconds is reported as a
+note rather than a fault, since a one-hit deal played into the traffic has no room for an announcement to
+be spent.
+
+```bash
+node tools/contract-probe.mjs http://[::1]:5199/            # or ONLY=glass, WORLD=desert
+```
+
+`tools/meta-probe.mjs` plays the *meta* loop: two runs in one world with the stores cleared, the menu's
+deals row read before anything has been run, and then every claim checked against the data itself rather
+than against the UI — the bank against the run's own token count, the card against the bank, the stored
+line against its own shape (whole quads, strictly increasing in distance and in time, spaced 20 m apart,
+ending where the record's distance says the run stopped), the ghost's lane against the stored line at the
+same metre, and the HUD's race number against the readout's own gap. The purchase half seeds a balance
+rather than earning one — 1,200 tokens is four long runs, and the point is the *purchase*, not the
+grinding — and then checks that a deal past the balance stays shut, a deal within it can be paid for,
+that paying takes exactly the price, and that the deal is open afterwards. Like the contract probe, it
+reads the feed from the DOM at the observer callback, subtree included.
+
+```bash
+node tools/meta-probe.mjs http://[::1]:5199/                # or WORLD=city, SEED_BANK=1200
 ```
 
 `tools/drop-probe.mjs` drives a run and then takes the link away from under it, to check the one
