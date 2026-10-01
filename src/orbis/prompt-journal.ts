@@ -45,6 +45,14 @@ export type PromptRecord = {
    * makes that checkable from a run rather than from the design.
    */
   chunk?: number;
+  /**
+   * True when the ask went out mid-chunk on the priority deadline rather than at a boundary.
+   *
+   * The deadline is the one sanctioned way two asks land in one chunk: the earlier one is
+   * overwritten before the model reads it, in exchange for a play event that may not be dropped. An
+   * audit that counts asks per chunk needs to tell that trade-off from a gate that failed.
+   */
+  deadline?: boolean;
   /** Set once the model has accepted it. */
   ok?: boolean;
   /** Set when it was never sent, and why. */

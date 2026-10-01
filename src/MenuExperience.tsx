@@ -134,7 +134,7 @@ export default function MenuExperience({ onStart, entering = false, returning = 
   const tone = worldTone(worldState);
 
   /**
-   * The menu stages a choice and asks Orbis for nothing.
+   * The menu stages a choice; the world is asked for by the run.
    *
    * It used to start generating the moment it mounted, so that by the time the player pressed Start
    * there was a world behind them to dive into. That world was billed for as long as it was ready —

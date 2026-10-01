@@ -721,7 +721,7 @@ Connecting...
 Generating world...
 World live
 Reconnecting...
-Local world mode
+World link offline
 ```
 
 ---
@@ -1425,7 +1425,7 @@ launch dive**, undoing it.- **A blip is not a broken world.** A `set_prompt` fai
   world error go through `failureMessage()`, but the copy forks on where the failure happened, because
   only one of the two is coming back: a link that was once live is being retried by the backoff above,
   while a link that never readied has nothing retrying it — so calling that a reconnect would be a lie
-  and it reads "Couldn't reach the Orbis world — the run plays in local world mode" instead. This was
+  and it reads "Couldn't reach the Orbis world — the run plays over the local backdrop" instead. This was
   the last path that could put a raw SDK string on screen (`http transport error: jwt resolver rejected:
   fetch failed`); verified by breaking the token route on purpose, which is what makes the cold-start
   branch reachable: the chip showed the friendly copy, and the raw string stayed in the console's

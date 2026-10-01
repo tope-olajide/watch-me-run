@@ -207,7 +207,7 @@ Two honest notes on reading these numbers. The token count and the stumble count
 route the headless runner happens to take, so they move between runs (the desert run a build earlier
 reached 597 m with 17 tokens; the desert's distance is the stable figure, and it is within 2 m across
 runs). And the forest pass was the first launch after a cold server start, so its menu warm-up spent
-~60 s in `Local world mode` before the transport came up — that is the documented cold-start path, and
+~60 s on the `World link offline` chip before the transport came up — that is the documented cold-start path, and
 the run itself was live from its first sample.
 
 ### Checked at the phone breakpoint too

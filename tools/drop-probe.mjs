@@ -1,6 +1,6 @@
 // Does a link dropped *during* a run come back generating?
 //
-// Recreates the reported failure — a mid-run disconnect that leaves the run in local world mode — and
+// Recreates the reported failure — a mid-run disconnect that leaves the run over the local backdrop — and
 // then watches the app put itself back together: the status transitions, the arming pass's own trace
 // entries, and, the only honest evidence that frames are really being produced again, how much the
 // world's pixels move once it has recovered.

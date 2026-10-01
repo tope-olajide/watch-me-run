@@ -30,7 +30,7 @@ import {
  * It owns the only Reactor session, the only `<video>`, and the only prompt channel, so the
  * generated world is continuous: the menu shows a world being generated, a run continues inside
  * that same stream, and returning to the menu does not cut it. Everything here is invisible to
- * gameplay — the runner is fully playable in local world mode if Orbis never connects.
+ * gameplay — the runner is fully playable over the local backdrop if Orbis never connects.
  *
  * Three rules keep this component stable, and all three were learned the hard way:
  *   1. The provider hands back new callback identities on every render, so every effect and every
@@ -50,7 +50,7 @@ const CONNECT_OPTIONS: ReactorConnectOptions = { autoConnect: false, maxAttempts
 const READY_TIMEOUT_MS = 40_000;
 
 /**
- * How long the two retry loops below keep asking before the world is left in local mode.
+ * How long the two retry loops below keep asking before the world is left on the local backdrop.
  *
  * The server, not this file, decides how long a session that was never released can hold the
  * account's only slot: a lease lasts at most `MAX_SESSION_DURATION_SECONDS` (20 minutes — see
@@ -96,7 +96,7 @@ const ARM_RETRY_MS = 1_500;
  *
  * The pass is normally driven by the status changing, and a run does not change it: a `start` that
  * fails on a link that is still up would leave nothing to re-run this effect at all, and the run
- * would finish in local world mode with the world reachable the whole time — the same bug the mid-run
+ * would finish over the local backdrop with the world reachable the whole time — the same bug the mid-run
  * re-arm exists to fix, one failure deeper. Four is chosen against the alternative, an unbounded loop
  * against a model that is failing on purpose.
  */
@@ -192,16 +192,16 @@ if (import.meta.env.DEV) {
 /**
  * A dropped transport is a recoverable event, not a diagnosis. When `set_prompt` fails because the
  * peer connection went away the SDK reports the raw command failure, and handing that to the player
- * as "broken world" is both ugly and wrong: the run keeps playing in local world mode and the link
+ * as "broken world" is both ugly and wrong: the run keeps playing over the local backdrop and the link
  * comes back by itself. Transport symptoms get the reconnecting copy; real errors keep their text.
  */
 const TRANSPORT_PATTERN = /disconnect|transport|websocket|peer connection|fetch failed|network/i;
 const RECONNECTING_MESSAGE = "World link interrupted — reconnecting";
 /**
  * The same symptom on a link that never came up. Nothing is retrying this one, so it must not claim
- * to be reconnecting — the run continues in local world mode and the retry button is the way back.
+ * to be reconnecting — the run continues over the local backdrop and the retry button is the way back.
  */
-const UNREACHABLE_MESSAGE = "Couldn't reach the Orbis world — the run plays in local world mode";
+const UNREACHABLE_MESSAGE = "Couldn't reach the Orbis world — the run plays over the local backdrop";
 
 /**
  * Backoff for recovering a session that dropped on its own, while a world is still wanted.
@@ -691,7 +691,7 @@ function WorldSession() {
   }, [error, lastError, status]);
 
   // A session that dropped on its own is recovered rather than left for the player: the world is
-  // still wanted, and a run in progress must not finish in local world mode because of a blip. The
+  // still wanted, and a run in progress must not finish over the local backdrop because of a blip. The
   // backoff is bounded — doubling for the fast phase, then a minute at a time past it, so the loop
   // outlives a session lease it may be waiting on — and a link that comes back resets the budget.
   //

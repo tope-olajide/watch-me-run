@@ -35,7 +35,7 @@ export type RoadGrade = {
    * second calibration constant. The ribbon's `ribbonAtUnity` is a property of the ribbon's material
    * and texture and says nothing about a different one, so reusing it would be wrong; the ratio gets
    * the same answer without inventing numbers nobody has measured, and it is exactly 1 until frames
-   * arrive — which is why local world mode looks unchanged.
+   * arrive — which is why the local backdrop looks unchanged.
    */
   terrain: number;
 };
@@ -43,7 +43,7 @@ export type RoadGrade = {
 type WorldGrade = {
   /**
    * Tone of the generated ground in this world, in the sampler's units, used until frames are
-   * measured. Only matters in local world mode — a live world overrides it within a second.
+   * measured. Only matters over the local backdrop — a live world overrides it within a second.
    */
   ground: number;
   /** Tone this world's ribbon renders at per unit of material brightness: its calibration. */
@@ -73,7 +73,7 @@ type WorldGrade = {
  *
  * Since the distance haze went in, the sampler reads the ground band just under the horizon (where
  * the ribbon fades into the world) rather than the lower third (now haze). These presets were
- * measured on the old band, so they are only rough fallbacks for local world mode — the live
+ * measured on the old band, so they are only rough fallbacks for the local backdrop — the live
  * measurement is what the ribbon is actually graded against. `ground` is now load-bearing in live
  * mode too, as the baseline the local ground's multiplier is taken against (see `terrain`), so if
  * these are ever re-measured on the horizon band they should be re-measured for both uses.

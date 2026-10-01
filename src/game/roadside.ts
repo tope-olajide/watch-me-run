@@ -578,7 +578,7 @@ export function planRoadside(
 /**
  * The panel's picture when there is no live world to put on it.
  *
- * A lit panel with nothing on it is a black rectangle, and a run in local world mode — or the first
+ * A lit panel with nothing on it is a black rectangle, and a run over the local backdrop — or the first
  * seconds of one, before Orbis has produced a frame — would be scattered with them. So each world
  * gets an abstract poster of its own: a lit band, a couple of overprinted blocks, and scan lines, all
  * in the world's palette. It is deliberately not a picture of anything, because it is standing in for

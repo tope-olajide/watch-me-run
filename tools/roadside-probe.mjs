@@ -227,7 +227,7 @@ try {
     const deadline = Date.now() + LIVE_WAIT_MS;
     while (Date.now() < deadline) {
       const state = await json(worldState);
-      // A world that never streams still opens the run in local world mode, so the run surface coming
+      // A world that never streams still opens the run over the local backdrop, so the run surface coming
       // up is not the test; the session started and the video painting is.
       if (state.surface === "run" && state.run && state.started && state.video >= 2) {
         live = true;
