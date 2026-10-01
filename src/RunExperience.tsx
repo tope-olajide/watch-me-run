@@ -3,7 +3,7 @@ import type { MouseEvent } from "react";
 import RunnerScene, { type RunTerms } from "./game/RunnerScene";
 import SoundSettings from "./game/SoundSettings";
 import MarkerSettings from "./game/MarkerSettings";
-import { playCoin } from "./game/audio";
+import { playCoin, playPickup } from "./game/audio";
 import { coinMultiplierAt, coinValueAt, difficultyAt, environmentPace } from "./game/pattern-field";
 import type { CharacterId } from "./game/character-catalog";
 import type { Environment, HazardKind, RunState, WorldEvent } from "./game/run-state";
@@ -34,6 +34,15 @@ const FEED_LENGTH = 3;
  * answered a few seconds late is still the deal; one that is never answered is the failure.
  */
 const TERMS_RETRY_MS = 2200;
+
+/**
+ * How long a spent pickup's callout stays on screen.
+ *
+ * Long enough to be read at a run — the shield's whole job happens in a lane the player was already
+ * leaving — and short enough that it cannot be mistaken for a state: the chip in the HUD is the state,
+ * and this is the moment it changed.
+ */
+const SPENT_CALLOUT_MS = 1600;
 
 /** One answered ask: what the run did, what the world did about it, and the prompt that was sent. */
 type FeedEntry = {
@@ -221,7 +230,14 @@ export default function RunExperience({ environment, characterId, onExit, leavin
    * many metres ahead of the best run at the same second this run is.
    */
   const [ghost, setGhost] = useState<{ lane: number; ahead: number } | null>(null);
-  /** Mirrors `result` for the reads that must not wait for a render: the key handler and steering. */
+  /**
+   * Mirrors `result` for the reads that must not wait for a render: the key handler and steering.
+   *
+   * Also latched at the run's end, synchronously (see `onRunEnd`), because the render that turns
+   * `result` into `finished` is a frame away: an event fired in that frame would otherwise reach the
+   * director *after* the reset that is meant to silence a finished run, and steer the world behind
+   * the end card. The latch is let go again when `result` is cleared, which is how a run starts.
+   */
   const finished = useRef(false);
   finished.current = result !== null;
   const worldState = useWorld();
@@ -273,6 +289,13 @@ export default function RunExperience({ environment, characterId, onExit, leavin
   const tier = Math.floor(ramp * 4);
   const [beat, setBeat] = useState<{ tier: number; value: number } | null>(null);
   const [lastToken, setLastToken] = useState<{ value: number; key: number } | null>(null);
+  /**
+   * A pickup that spent itself: said out loud because the HUD can only show it as a chip vanishing,
+   * which is also what a timer running out looks like. The words come from the same `describeAnswer`
+   * the world's feed uses, so the callout and the feed cannot drift apart.
+   */
+  const [spent, setSpent] = useState<{ line: string; detail: string; kind: string; key: number } | null>(null);
+  const spentKey = useRef(0);
   const crossedTier = useRef(0);
   const tokenKey = useRef(0);
   /**
@@ -289,6 +312,14 @@ export default function RunExperience({ environment, characterId, onExit, leavin
     const timer = window.setTimeout(() => setLastToken(null), 1200);
     return () => window.clearTimeout(timer);
   }, [lastToken]);
+
+  // The callout's timer waits with the run: a pause is a player who has stopped to look, so the one
+  // thing on screen explaining the last thing that happened must not expire behind the pause card.
+  useEffect(() => {
+    if (!spent || paused) return;
+    const timer = window.setTimeout(() => setSpent(null), SPENT_CALLOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [spent, paused]);
 
   const onToken = useCallback((value: number) => {
     tokenKey.current += 1;
@@ -329,7 +360,12 @@ export default function RunExperience({ environment, characterId, onExit, leavin
               [{ key: feedKey.current, ...answer, prompt }, ...entries].slice(0, FEED_LENGTH),
             );
           }
-          world.sendPrompt(prompt, { channel: "run", reason: "run-event" });
+          world.sendPrompt(prompt, {
+            channel: "run",
+            reason: "run-event",
+            chunk: cause?.chunk,
+            deadline: cause?.deadline,
+          });
         },
         // Orbis generates the sound with the picture, on its own channel. A caption is one sentence
         // where the visual prompt beside it is a paragraph, so the sound costs almost nothing to
@@ -379,7 +415,7 @@ export default function RunExperience({ environment, characterId, onExit, leavin
     setBeat({ tier, value });
 
     const state = latestState.current;
-    if (steering.current && state) {
+    if (steering.current && !finished.current && state) {
       void director.trigger(
         { ...state, currentEvent: "value_tier" },
         { type: "value_tier", tier, value },
@@ -416,7 +452,7 @@ export default function RunExperience({ environment, characterId, onExit, leavin
     if (leaving) return;
     const ask = () => {
       const state = latestState.current;
-      if (!state || !steering.current || termsAnswered.current) return;
+      if (!state || !steering.current || finished.current || termsAnswered.current) return;
       void director.trigger(
         { ...state, currentEvent: "contract_taken" },
         { type: "contract_taken", contract: contract.name },
@@ -436,18 +472,30 @@ export default function RunExperience({ environment, characterId, onExit, leavin
   // would arrive and then be overwritten by an event from the run that already ended.
   useEffect(() => () => director.reset(), [director]);
 
+  /**
+   * The pause toggle, shared by the Space key and the button on the run screen.
+   *
+   * One function rather than two handlers that agree, because they are the same control and a phone
+   * has no Space bar: the button is the only way to stop a run on a touch device, and it has to be
+   * the same pause the key makes — same world pause, same frozen clock, same overlay.
+   *
+   * Pausing a finished run would put a pause over a card that is already a stop: the player taps or
+   * presses Space on the card expecting to start again, so both paths do nothing instead of lying.
+   */
+  const togglePause = useCallback(() => {
+    if (finished.current) return;
+    setPaused((value) => !value);
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code !== "Space") return;
       event.preventDefault();
-      // Pausing a finished run would put a pause over a card that is already a stop: the player
-      // presses Space on the card expecting to start again, so it does nothing instead of lying.
-      if (finished.current) return;
-      setPaused((value) => !value);
+      togglePause();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [togglePause]);
 
   // Pausing the game pauses the world with it. It is the same pause, not a second one: a paused
   // session stops producing chunks, so the frame on screen is the frame that was paused, and the
@@ -474,7 +522,15 @@ export default function RunExperience({ environment, characterId, onExit, leavin
       setDistance(state.distance);
       setScore(state.score);
       setCoins(state.coins);
-      if (!steering.current) return;
+      // The powerup is heard as it is taken, on the same event that lights its chip: one moment, one
+      // sound, so the two cannot announce different things.
+      if (event.type === "powerup_collected") playPickup();
+      if (event.type === "powerup_spent") {
+        const answer = describeAnswer(event, state);
+        spentKey.current += 1;
+        setSpent({ line: answer.line, detail: answer.detail, kind: event.powerup, key: spentKey.current });
+      }
+      if (finished.current || !steering.current) return;
       void director.trigger(state, event);
     },
     [director],
@@ -541,6 +597,10 @@ export default function RunExperience({ environment, characterId, onExit, leavin
       setMagnet(state.magnet);
       setDoubled(state.doubleTokens);
       setPaused(false);
+      // The run is over now, not one render from now: this is read by the event gate, which is what
+      // keeps a collision in the frame that ended the run from asking the world for anything after
+      // the director has been reset.
+      finished.current = true;
       // Nothing a finished run had queued may steer the world after it: the same reason the exit
       // transition stops the director, arriving one beat earlier.
       director.reset();
@@ -572,6 +632,7 @@ export default function RunExperience({ environment, characterId, onExit, leavin
     setThreads(0);
     setLastToken(null);
     setBeat(null);
+    setSpent(null);
     // A new run starts with nothing answered: the feed the last run earned is not this run's.
     setFeed([]);
     crossedTier.current = 0;
@@ -719,9 +780,37 @@ export default function RunExperience({ environment, characterId, onExit, leavin
         game talking about itself while the player was busy.
       */}
       <header className="run-header">
-        <button className="quiet-button" onClick={exitRun} type="button">
-          ← Exit
-        </button>
+        {/*
+          The chrome is one cluster at the left: Exit, then Pause. It sits against the HUD's own
+          corner rather than the right, where a control would be underneath the panel.
+
+          Pause is on the screen as well as on the keyboard because a touch device has no Space bar,
+          and a run that cannot be stopped is a run that has to be finished. It stays visible while
+          the run is paused (the header is above the overlay), which makes it the way *out* of a pause
+          on a phone, and it keeps its own state on `data-paused` for the probes.
+        */}
+        <div className="run-actions">
+          <button className="quiet-button" onClick={exitRun} type="button">
+            ← Exit
+          </button>
+          {!result && (
+            <button
+              className="quiet-button run-pause"
+              type="button"
+              data-paused={paused ? "true" : "false"}
+              aria-pressed={paused}
+              title={paused ? "Resume the run (Space)" : "Pause the run (Space)"}
+              onClick={(event) => {
+                // The click must not leave the button focused: with focus on it, the Space a player
+                // then presses to resume would activate the button again instead of reaching the run.
+                event.currentTarget.blur();
+                togglePause();
+              }}
+            >
+              {paused ? "▶ Resume" : "❚❚ Pause"}
+            </button>
+          )}
+        </div>
       </header>
 
       <div className="run-hud" data-damage={damage}>
@@ -878,6 +967,19 @@ export default function RunExperience({ environment, characterId, onExit, leavin
         </div>
         </div>
       </div>
+
+      {/*
+        The one gameplay event the HUD can only show by a chip disappearing, said out loud: a pickup
+        spending itself. It sits below the top strip and above the play, in the pickup's own colour —
+        the shield's cyan, matching the frame flash that now announces it — and the key remounts it so
+        a second spend replays the beat rather than reusing a card that has already faded.
+      */}
+      {spent && (
+        <div className="run-callout" data-kind={spent.kind} role="status" key={spent.key}>
+          <b>{spent.line}</b>
+          <small>{spent.detail}</small>
+        </div>
+      )}
 
       <div
         className={`orbis-preview tone-${tone} ${worldState.error ? "is-error" : ""}`}

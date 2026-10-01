@@ -79,7 +79,7 @@ export default function SoundSettings({ compact = false }: { compact?: boolean }
         </span>
       </label>
 
-      <p className="sound-hint">Music and token pickups only — the world's generated soundtrack is not affected.</p>
+      <p className="sound-hint">Music and pickups only — the world's generated soundtrack is not affected.</p>
     </div>
   );
 }

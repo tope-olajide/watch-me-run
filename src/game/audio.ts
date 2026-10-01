@@ -1,18 +1,19 @@
 import { useSyncExternalStore } from "react";
 import musicUrl from "../../sounds/bgm.mp3?url";
 import coinUrl from "../../sounds/koiroylers-get-coin-351945.mp3?url";
+import pickupUrl from "../../sounds/level-up.mp3?url";
 
 /**
- * The game's own sound: a track the whole visit shares, and a pickup effect that fires the moment a
- * token is taken.
+ * The game's own sound: a track the whole visit shares, and two effects — a token taken, and a powerup
+ * taken.
  *
  * ## It is the game's layer, not the world's
  *
  * Orbis generates a soundtrack with the picture and the world layer plays it — the generated audio is
- * wanted everywhere, and a run takes it (`src/orbis/WorldLayer.tsx`). These two files are therefore
+ * wanted everywhere, and a run takes it (`src/orbis/WorldLayer.tsx`). These files are therefore
  * the *game's* sound sitting on top of a world that is already making noise, and that is exactly what
- * the settings control: what the player turns down with the sound panel is the music and the pickup,
- * and the world's generated audio is left where it was. Folding the two together would mean a player
+ * the settings control: what the player turns down with the sound panel is the music and the two
+ * pickups, and the world's generated audio is left where it was. Folding the two together would mean a player
  * who only wanted the music quieter losing the world they came for.
  *
  * ## One track, from the first click
@@ -56,6 +57,16 @@ const DEFAULT_SETTINGS: SoundSettings = { muted: false, volume: 0.6 };
  */
 const MUSIC_GAIN = 0.45;
 const COIN_GAIN = 0.75;
+/**
+ * The powerup, above both of the others.
+ *
+ * A token is one of a dozen a run collects; a powerup arrives every ~165 m and changes what the next
+ * pattern costs — a shield survives a mistake, a magnet pulls the coins in, a double pays them twice —
+ * so it is the one pickup whose sound has to read as an *event* rather than as a tick. It is a
+ * different file from the coin's on purpose: the two must not be confusable at speed, and a run that
+ * took a shield has to hear that it did while it is still looking at the road.
+ */
+const PICKUP_GAIN = 0.85;
 
 /**
  * The fades.
@@ -75,6 +86,14 @@ const MUSIC_FADE_MS = 320;
  * another voice changes anything anyone can hear.
  */
 const COIN_VOICES = 4;
+
+/**
+ * How many powerup voices overlap.
+ *
+ * Two, against the coin's four: a token arrives in ones and twos inside a second, where a powerup is
+ * spaced by distance and the whole field carries one at a time.
+ */
+const PICKUP_VOICES = 2;
 
 function readSettings(): SoundSettings {
   try {
@@ -134,6 +153,8 @@ export function setVolume(volume: number): void {
 let music: HTMLAudioElement | undefined;
 let voices: HTMLAudioElement[] = [];
 let nextVoice = 0;
+let pickupVoices: HTMLAudioElement[] = [];
+let nextPickupVoice = 0;
 
 /** A level, from the shared setting and one layer's own gain. */
 function level(gain: number): number {
@@ -149,6 +170,7 @@ function applyGain(element: HTMLAudioElement, gain: number): void {
 function mix(): void {
   rampMusic(MUSIC_FADE_MS);
   for (const voice of voices) applyGain(voice, COIN_GAIN);
+  for (const voice of pickupVoices) applyGain(voice, PICKUP_GAIN);
 }
 
 let fadeFrame = 0;
@@ -213,6 +235,19 @@ function ensureVoices(): HTMLAudioElement[] {
   return voices;
 }
 
+/** The powerup voices, built the same way and kept for the same reason. */
+function ensurePickupVoices(): HTMLAudioElement[] {
+  if (!pickupVoices.length) {
+    pickupVoices = Array.from({ length: PICKUP_VOICES }, () => {
+      const element = new Audio(pickupUrl);
+      element.preload = "auto";
+      applyGain(element, PICKUP_GAIN);
+      return element;
+    });
+  }
+  return pickupVoices;
+}
+
 function createMusic(): HTMLAudioElement {
   const element = new Audio(musicUrl);
   element.loop = true;
@@ -268,10 +303,12 @@ export function installAudioUnlock(): void {
 
   const events = ["pointerdown", "keydown"] as const;
   const attempt = () => {
-    // The pickup is warmed with the track. It is a 99 KB file next to a 3.7 MB one, and the only
-    // alternative is the first token of the first run arriving while the browser is still fetching
-    // it — which is the one pickup of the run a player is guaranteed to notice.
+    // Both pickups are warmed with the track. They are a few hundred KB next to a multi-megabyte
+    // one, and the only alternative is the first token (or the first powerup) of the first run
+    // arriving while the browser is still fetching it — which is the one pickup of the run a player
+    // is guaranteed to notice.
     ensureVoices();
+    ensurePickupVoices();
     void startMusic().then(
       () => {
         for (const event of events) window.removeEventListener(event, attempt);
@@ -302,6 +339,28 @@ export function playCoin(): void {
   void voice.play().catch(() => undefined);
 }
 
+/**
+ * One powerup taken — a shield, a magnet or a double.
+ *
+ * Fired from the same `powerup_collected` event the HUD's chip is, for the same reason the coin is
+ * fired from `onToken`: the sound, the chip and the state it names are one moment, and a sound wired
+ * to anything else eventually announces a pickup that did not happen.
+ */
+export function playPickup(): void {
+  if (settings.muted || settings.volume <= 0) return;
+  const pool = ensurePickupVoices();
+
+  const voice = pool[nextPickupVoice];
+  nextPickupVoice = (nextPickupVoice + 1) % pool.length;
+  applyGain(voice, PICKUP_GAIN);
+  try {
+    voice.currentTime = 0;
+  } catch {
+    // As above: seeking before metadata arrives is a browser quirk, not a reason to lose the sound.
+  }
+  void voice.play().catch(() => undefined);
+}
+
 /* ---- published for the probes ----------------------------------------------------------------
  * What the settings are, and what the sound is doing about them: `volume` is the mixed level on the
  * actual element rather than the setting, because "the slider moved" and "the element got quieter"
@@ -322,6 +381,8 @@ type SoundReport = {
   } | null;
   coinVoices: number;
   coinGain: number;
+  pickupVoices: number;
+  pickupGain: number;
   musicGain: number;
 };
 
@@ -341,6 +402,8 @@ if (typeof window !== "undefined") {
       : null,
     coinVoices: voices.length,
     coinGain: COIN_GAIN,
+    pickupVoices: pickupVoices.length,
+    pickupGain: PICKUP_GAIN,
     musicGain: MUSIC_GAIN,
   });
 }

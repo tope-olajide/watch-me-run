@@ -18,8 +18,9 @@
 //
 // A dev server (`npm run dev`), because the readout behind it is development-only. Exits non-zero if a
 // pickup never arrived, the cadence drifted past 130–205 m (median), a kind never appeared, a pickup
-// went unanswered in the feed, a shield was spent without a `SHIELD SPENT` line, the magnet never bent
-// a coin, a token was paid off the curve, or the HUD never showed a chip. The numbers it prints are the
+// went unanswered in the feed, a shield was spent without a `SHIELD SPENT` line *and* a spent callout
+// on screen, the frame flashed the damage red for the hit a shield absorbed, the magnet never bent a
+// coin, a token was paid off the curve, or the HUD never showed a chip. The numbers it prints are the
 // ones quoted in the README.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -248,6 +249,9 @@ try {
   let myLane = 1;
   let shieldUpDamage = null;
   let shieldSpentAt = null;
+  /** The spent callout as the DOM showed it: read at the moment the shield disappears. */
+  let spentCallout = null;
+  const spentSamples = [];
   let lastProgress = 0;
   let restarts = 0;
   const deadline = Date.now() + DEADLINE_MS;
@@ -294,6 +298,38 @@ try {
     if (field.shield && shieldUpDamage === null) shieldUpDamage = field.damage;
     if (!field.shield && shieldUpDamage !== null && shieldSpentAt === null) {
       shieldSpentAt = { damage: field.damage, was: shieldUpDamage, distance: field.distance };
+      // A spent shield is the one event the HUD can only show by a chip *vanishing*, which is also
+      // what a timer running out looks like — so it has to be said out loud, and that callout is what
+      // this reads. The frame's other half is the flash: a hit the shield absorbed must pulse the
+      // shield's own cyan (`--absorb`) and never the damage red (`--hit`). The callout lives for
+      // 1.6 s and the frame value decays from 1 in about 0.7 s, so a short poll catches both.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const sample = await json(`(() => {
+          const root = getComputedStyle(document.documentElement);
+          const el = document.querySelector(".run-callout");
+          if (!el) return null;
+          const style = getComputedStyle(el);
+          return {
+            line: el.querySelector("b")?.textContent ?? null,
+            detail: el.querySelector("small")?.textContent ?? null,
+            kind: el.dataset.kind ?? null,
+            opacity: Number(style.opacity),
+            absorb: Number(root.getPropertyValue("--absorb")) || 0,
+            hit: Number(root.getPropertyValue("--hit")) || 0,
+          };
+        })()`);
+        if (sample) {
+          spentSamples.push(sample);
+          if (!spentCallout) spentCallout = sample;
+        }
+        // Read until both halves have been seen at strength: the callout animates in from opacity 0
+        // over its first ~130 ms, so the sample that catches its first frame is not the one to judge
+        // it by, and the frame's pulse is read from the root at the same moment.
+        const visible = spentSamples.some((item) => item.opacity > 0.5);
+        const pulsed = spentSamples.some((item) => item.absorb > 0);
+        if (visible && pulsed) break;
+        await sleep(100);
+      }
     }
 
     for (const coin of field.coins ?? []) {
@@ -416,6 +452,13 @@ try {
   for (const [kind, track] of chipTracks) console.log(`  ${kind}: ${track.join(" → ")}`);
 
   console.log(`\nshield: ${shieldSpentAt ? `up at damage ${shieldSpentAt.was}, gone at ${shieldSpentAt.distance} m with damage ${shieldSpentAt.damage}` : "never seen"}`);
+  console.log(
+    `spent callout: ${
+      spentCallout
+        ? `${spentCallout.line} — ${spentCallout.detail} [${spentCallout.kind}] · ${spentSamples.length} sample${spentSamples.length === 1 ? "" : "s"}, opacity up to ${Math.max(...spentSamples.map((sample) => sample.opacity)).toFixed(2)}, frame absorb up to ${Math.max(...spentSamples.map((sample) => sample.absorb)).toFixed(2)}, hit up to ${Math.max(...spentSamples.map((sample) => sample.hit)).toFixed(2)}`
+        : "never seen"
+    }`,
+  );
   console.log(`\nnotes:`);
   for (const note of notes) console.log(`  ${note}`);
 
@@ -436,6 +479,24 @@ try {
   else {
     if (shieldSpentAt.damage !== shieldSpentAt.was) faults.push("the shield was gone but the damage had moved: it did not absorb the hit");
     if (!recorded.feed.some((item) => /SPENT/.test(item.line))) faults.push("the shield was spent without a SPENT line in the feed");
+    // The callout, not the feed: the feed is a corner card the run screen hides on purpose, so a
+    // spend that is only answered there is a spend the player never saw.
+    if (!spentCallout) faults.push("the shield was spent without a spent callout on screen");
+    else {
+      if (spentCallout.line !== "SHIELD SPENT") faults.push(`the spent callout read ${JSON.stringify(spentCallout.line)}`);
+      if (spentCallout.kind !== "shield") faults.push(`the spent callout was drawn for ${JSON.stringify(spentCallout.kind)}`);
+      if (!(Math.max(...spentSamples.map((sample) => sample.opacity)) > 0.1)) {
+        faults.push(`the spent callout was mounted but never visible (opacity ${Math.max(...spentSamples.map((sample) => sample.opacity))})`);
+      }
+    }
+    if (!spentSamples.some((sample) => sample.absorb > 0)) {
+      faults.push("the frame never pulsed in the shield's colour for a spent shield");
+    }
+    // A *residual* red is not this spend's doing: a real hit taken before the shield was collected can
+    // still be decaying when the shield is spent. What must not happen is the frame flashing the
+    // damage red *for this impact*, so the check is a strong flash rather than any value at all.
+    const red = spentSamples.find((sample) => sample.hit > 0.5);
+    if (red) faults.push(`the frame flashed the damage red for a hit the shield absorbed (--hit ${red.hit})`);
   }
   if (pulls.length < 2) faults.push(`the magnet barely bent a coin (${pulls.length} samples)`);
   const offDouble = doubled.map(offFor).filter((value) => value !== null && Math.abs(value) > 1.5);

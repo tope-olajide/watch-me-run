@@ -32,7 +32,10 @@ const field = await import(`file://${bundlePath.replace(/\\/g, "/")}`);
 /** Mirrors src/game/RunnerScene.tsx: these are gameplay facts, not tuning knobs. */
 const SPAWN_HORIZON = 80;
 const PLAYER_Z = 3;
-const FRONTIER_START = -6;
+// Where the first chunk is laid comes from the field itself: a run opens on `START_CLEARANCE`
+// metres of empty road, and an audit that started its field sooner would be measuring an opening
+// no player ever sees.
+const FRONTIER_START = PLAYER_Z - field.START_CLEARANCE;
 // The pace and difficulty curves now come from the field itself rather than being copied here: each
 // world has its own speed ramp, and a duplicate would silently measure the wrong game.
 const { speedAt, difficultyAt, topSpeed, environmentPace } = field;

@@ -14,6 +14,7 @@ import {
   patternGap,
   pickShape,
   speedAt,
+  START_CLEARANCE,
   topSpeed,
   type CoinSpawn,
   type PowerupKind,
@@ -693,7 +694,8 @@ function contactShadowTexture(): THREE.CanvasTexture {
 /**
  * The generated video is a separate DOM layer, so the runner's motion is projected onto it
  * through CSS variables: `--run-speed` scales and pushes the world, `--world-x` adds a small
- * parallax when changing lanes, and `--hit` flashes the frame on impact.
+ * parallax when changing lanes, `--hit` flashes the frame on impact, and `--absorb` flashes it in
+ * the pickup's colour when a shield takes that impact instead of the run.
  */
 let lastPublish = -1;
 
@@ -704,6 +706,8 @@ function publishWorldMotion(
   hit: number,
   now: number,
   force = false,
+  /** How hard the shield's own flash is showing: 0 on a normal frame, 1 as a hit is absorbed. */
+  absorb = 0,
 ) {
   if (!force && now - lastPublish < 0.15) return;
   lastPublish = now;
@@ -716,6 +720,9 @@ function publishWorldMotion(
   root.style.setProperty("--run-speed", (Math.min(1, Math.max(0, (speed - pace.baseSpeed) / span))).toFixed(3));
   root.style.setProperty("--world-x", lateral.toFixed(3));
   root.style.setProperty("--hit", hit.toFixed(2));
+  // The other flash, and deliberately a different colour: one means the run was damaged and the
+  // other means it was not, so a shield taking a hit must never look like the hit landing.
+  root.style.setProperty("--absorb", absorb.toFixed(2));
 }
 
 /**
@@ -852,7 +859,7 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
  * The panels are the interesting half. Their picture is a frame of the live generated world, sampled
  * out of the SDK's own video by `src/orbis/world-frame`, so the roadside wears the place the player
  * is running through and a change of world repaints it. Until there is a world to show — the opening
- * seconds, a run in local world mode — they carry `createPosterArt`'s abstract panel for that world,
+ * seconds, a run over the local backdrop — they carry `createPosterArt`'s abstract panel for that world,
  * because a lit panel with nothing on it is a black rectangle.
  */
 function Roadside({ environment, speedRef }: { environment: Environment; speedRef: { current: number } }) {
@@ -1546,7 +1553,13 @@ function RunnerSimulation({
   const ghostMarker = useRef<THREE.Group | null>(null);
   /** The distance at which the next pickup should appear. Advanced when one is actually laid. */
   const nextPowerupAt = useRef(POWERUP_SPACING);
-  const frontier = useRef(-6);
+  /**
+   * Where the next chunk is laid, in road coordinates. It begins a full `START_CLEARANCE` ahead of
+   * the runner rather than a few metres up the road: the opening stretch of a run — and of a retry,
+   * which is this whole component remounted — is empty by construction, so the first hazard the
+   * player meets is one they had time to see.
+   */
+  const frontier = useRef(PLAYER_Z - START_CLEARANCE);
   /**
    * The shape of the chunk about to be built, chosen one step early and held until it is built.
    *
@@ -1567,6 +1580,12 @@ function RunnerSimulation({
   /** `stride` in the units the DOM layer is told to parallax by: -1, 0, or 1 at the lane centres. */
   const lateral = useRef(0);
   const impact = useRef(0);
+  /**
+   * The shield's half of the frame flash. It rises when a pickup takes a hit and then decays on its
+   * own clock, so the two read as the same *kind* of moment — an impact — while never being the same
+   * signal: this one is a hit that did not land.
+   */
+  const absorb = useRef(0);
   /** Set on impact and decayed over about a second: the runner visibly recovers. */
   const stumbleSlow = useRef(0);
   /** The lane the simulation is actually reading, for the development readout. */
@@ -1894,6 +1913,9 @@ function RunnerSimulation({
     stride.current = THREE.MathUtils.damp(stride.current, LANES[lane] ?? 0, 8, step);
     lateral.current = stride.current / Math.abs(LANES[0]);
     impact.current = Math.max(0, impact.current - delta * 2.2);
+    // A touch slower than the damage flash: a spent shield has no stumble and no pip to be read by,
+    // so the frame itself has to hold long enough to be the whole message.
+    absorb.current = Math.max(0, absorb.current - delta * 1.4);
 
     // Half of the step is the runner crossing the frame and half is the ground sweeping under it; see
     // `CAMERA_LATERAL_FOLLOW`. The rig is not re-aimed, so the ground shears with real perspective.
@@ -1922,6 +1944,8 @@ function RunnerSimulation({
       lateral.current + gust.current * gustDir.current * 0.18,
       impact.current,
       clock.elapsedTime,
+      false,
+      absorb.current,
     );
 
     // The field of view opens against this world's top speed for the same reason the variable does.
@@ -1995,11 +2019,25 @@ function RunnerSimulation({
         // The stumble is the same either way — the runner is hit, visibly — but a shield spends
         // itself instead of the run: no damage, no combo reset, and the pickup's whole job is done in
         // this one branch.
+        const absorbed = state.shield;
         stumbleSlow.current = 1;
-        impact.current = 1;
+        // The flash says what the impact cost, and the two cases must not look alike: a run taking the
+        // hit flashes the damage red, and a shield taking it flashes in its own colour instead. The red
+        // flash is the game saying a hit landed — which is exactly what did not happen here, and it was
+        // why a spent shield used to read as a collision that did nothing.
+        impact.current = absorbed ? 0 : 1;
+        absorb.current = absorbed ? 1 : 0;
         setStumbling(true);
         scheduleReset(() => setStumbling(false), STUMBLE_MS);
-        publishWorldMotion(environment, speed, lateral.current, 1, clock.elapsedTime, true);
+        publishWorldMotion(
+          environment,
+          speed,
+          lateral.current,
+          impact.current,
+          clock.elapsedTime,
+          true,
+          absorb.current,
+        );
 
         if (state.shield) {
           state.shield = false;

@@ -137,6 +137,22 @@ export const FASTEST_SPEED = Math.max(
  */
 export const ESCAPE_DISTANCE = FASTEST_SPEED * ESCAPE_S;
 
+/**
+ * The empty road a run opens on, in metres, measured from the runner to the first hazard row.
+ *
+ * The field used to open with its first chunk already inside the runner's reaction window: the
+ * nearest row could be nine metres away, which at the launch's pace is under a second, and a `pair`
+ * or a wall sitting there asks for a lane change the player has not been given the time to read —
+ * the first thing a run taught was that it could not be played. The first chunk is laid this far
+ * past the line instead, so the opening stretch is empty by construction rather than by luck.
+ *
+ * One number covers both ways a run can start: a fresh run and "Run again" are the same remount of
+ * the simulation, so the clearance is applied at every line. Two escape windows rather than one,
+ * because the launch surge is still decaying through the opening seconds — the same distance is
+ * covered faster there than anywhere else in the run.
+ */
+export const START_CLEARANCE = ESCAPE_DISTANCE * 2;
+
 /** Difficulty at a distance into the run: 0 at the line, 1 once that world's content peaks. */
 export function difficultyAt(environment: Environment, distance: number): number {
   return Math.min(1, distance / environmentPace[environment].difficultyMeters);

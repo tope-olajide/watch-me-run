@@ -149,6 +149,9 @@ html[data-exiting="true"] .app-shell[class*="environment-"] { animation: run-out
   .menu[data-returning="true"] .menu-layout,
   .menu[data-returning="true"] .menu-backdrop,
   .app-shell[class*="environment-"] { animation: none; }
+  /* The callout is information rather than decoration, so without motion it simply appears and waits
+     for its timer: no beat, and the same words in the same place. */
+  .run-callout { animation: none; }
   /* Without the ride the beat cannot be read, so the world is left clean: no card, no weather. */
   .enter-card,
   .enter-weather { display: none; }
@@ -476,10 +479,21 @@ html[data-surface="menu"] .world-layer { opacity: 0 !important; animation: none;
    by under half a percent, which is inside the margin `horizonLine` keeps. */
 @keyframes world-breathe { from { transform: scale(1.01); } to { transform: scale(1.04); } }
 .app-shell[class*="environment-"]::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: radial-gradient(120% 90% at 50% 60%, rgba(226,74,52,0), rgba(226,74,52,.42)); opacity: var(--hit, 0); transition: opacity .3s ease-out; }
+/* The frame's other flash: the shield taking the hit instead of the run. The red above is damage and
+   this is damage that did not land, so the two differ in *colour* rather than in amount — at speed,
+   colour is the half of a message that is read first. Same decay-in-CSS trick as `--hit`: the scene
+   publishes a value, the transition does the easing. */
+.app-shell[class*="environment-"]::after { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: radial-gradient(120% 90% at 50% 60%, rgba(95,208,255,0), rgba(95,208,255,.52)); opacity: var(--absorb, 0); transition: opacity .3s ease-out; }
 .orbis-sound { position: absolute; right: 18px; bottom: 18px; z-index: 3; padding: 8px 14px; border: 1px solid rgba(196,217,206,.5); border-radius: 999px; background: rgba(7,16,20,.72); color: #d9ece2; font-family: "DM Mono", monospace; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
 .game-stage canvas { position: absolute !important; inset: 0; background: transparent; }
 .run-header, .run-hud, .director-card { position: absolute; z-index: 3; }
 .run-header { top: 25px; left: 30px; right: 30px; display: flex; align-items: center; justify-content: space-between; }
+/* The run's chrome, as one cluster: the HUD owns the other corner, and a control underneath it would
+   be a control the player cannot reach. */
+.run-actions { display: flex; align-items: center; gap: 8px; }
+/* Wide enough that the glyphs swapping between pause and resume do not move the button, and the same
+   size as Exit so the two read as one row. */
+.run-pause { min-width: 92px; text-align: center; }
 .run-title { color: #f6c84c; font-size: 13px; letter-spacing: .16em; font-weight: 600; }
 .quiet-button { border: 0; color: #e5eee9; background: #071014aa; padding: 9px 13px; cursor: pointer; }
 .run-status { color: #a9c6b7; font-size: 9px; }
@@ -538,6 +552,22 @@ html[data-surface="menu"] .world-layer { opacity: 0 !important; animation: none;
 .hud-hazard[data-phase="warning"] { color: #f6c84c; animation: hazard-warn 1.1s ease-in-out infinite; }
 .hud-hazard[data-phase="active"] { color: var(--hazard, #f6c84c); background: #071014c9; }
 @keyframes hazard-warn { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+/* A pickup spending itself, called out where the run is. The chip in the HUD is a *state*; this is the
+   moment it changed, and a state change whose only sign is an absence is the one thing a player cannot
+   be asked to notice at speed. Below the top strip and above the play, in the pickup's own colour —
+   the shield's cyan, matching the frame flash that arrives with it — and it fades on its own clock, so
+   the unmount is never what makes it disappear. */
+.run-callout { position: absolute; top: 84px; left: 50%; z-index: 4; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 18px; border: 1px solid currentColor; background: #071014e6; color: #7fdcff; font-family: "DM Mono", monospace; pointer-events: none; animation: callout-beat 1600ms cubic-bezier(.2,.8,.24,1) both; }
+.run-callout b { font-size: 13px; letter-spacing: .18em; text-transform: uppercase; text-shadow: 0 0 18px currentColor; }
+.run-callout small { color: inherit; font-size: 9px; letter-spacing: .06em; opacity: .78; }
+.run-callout[data-kind="magnet"] { color: #ff8fdd; }
+.run-callout[data-kind="double"] { color: #f6c84c; }
+@keyframes callout-beat {
+  0% { opacity: 0; transform: translate(-50%, -8px) scale(.96); }
+  8% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  72% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, 0) scale(1); }
+}
 /* Flow: the run's form, and the rate the ground pays. Built by near misses and threaded gaps, drained
    by clean running, wiped by a hit. */
 .hud-flow { display: flex; align-items: center; gap: 6px; min-width: 104px; }
