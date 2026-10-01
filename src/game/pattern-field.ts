@@ -17,9 +17,30 @@ export type ObstacleKind = "block" | "gate" | "wall";
 export type ObstacleSpawn = { lane: number; z: number; kind: ObstacleKind; passed: boolean };
 export type CoinSpawn = { lane: number; z: number; y: number; collected: boolean };
 
+/**
+ * The three things a run can pick up, and the three verbs they carry.
+ *
+ * A run already has one verb (dodge) with three shapes; the pickups each add a different one rather
+ * than a bigger number: `shield` survives a mistake, `magnet` collects what you did not drive through,
+ * `double` makes what you did collect worth more. They are also the only pickups that are not a reward
+ * for a move — a coin pays for reading a pattern, a pickup changes what the next pattern costs.
+ */
+export type PowerupKind = "shield" | "magnet" | "double";
+
+export type PowerupSpawn = {
+  lane: number;
+  z: number;
+  kind: PowerupKind;
+  collected: boolean;
+};
+
+/** Every pickup, for the audit and for the spawner's own choice. */
+export const POWERUP_KINDS: PowerupKind[] = ["shield", "magnet", "double"];
+
 export type Pattern = {
   obstacles: ObstacleSpawn[];
   coins: CoinSpawn[];
+  powerups: PowerupSpawn[];
   /** Distance the pattern occupies, including the space after its last piece. */
   span: number;
   /** Which shape produced this chunk. Carried so the audit can attribute tight windows to it. */
@@ -462,9 +483,16 @@ export function buildPattern(
   startZ: number,
   /** The shape to build. Defaults to a fresh pick, so a caller that does not care can ignore it. */
   shape: Shape = pickShape(difficulty),
+  /**
+   * Whether this chunk carries a pickup. Asked for by the run rather than rolled here: the spacing
+   * between pickups is a property of the run (metres travelled), and a chunk does not know where in
+   * the run it is being laid.
+   */
+  wantsPowerup = false,
 ): Pattern {
   const obstacles: ObstacleSpawn[] = [];
   const coins: CoinSpawn[] = [];
+  const powerups: PowerupSpawn[] = [];
   let heldLane: number | undefined;
   let span = 24;
 
@@ -587,15 +615,46 @@ export function buildPattern(
     span = 22;
   }
 
+  /**
+   * The pickup, if this chunk carries one.
+   *
+   * Placed after the shape is built, so it can be put in a lane the shape leaves clear, and at the
+   * end of the chunk rather than in the middle of it: a reward that has to be taken *while* reading
+   * a pattern is a second decision layered on the first, and the first one is the game. Preferring
+   * `heldLane` means the pickup is usually the lane the move already sent the runner to, so taking it
+   * costs nothing — it is a gift for playing well, not a dare.
+   *
+   * Four metres before the pattern's end: inside this chunk's own territory, so it can never land on
+   * the next chunk's first obstacle, no matter how tight `patternGap` gets.
+   */
+  if (wantsPowerup) {
+    const z = startZ - span + 4;
+    const lane = pickCoinLane(obstacles, z, 0, heldLane);
+    if (lane !== undefined) {
+      const kind = POWERUP_KINDS[Math.floor(Math.random() * POWERUP_KINDS.length)];
+      powerups.push({ lane, z, kind, collected: false });
+    }
+  }
+
   // The empty space inside the pattern, measured from its last piece rather than assumed: the gap
   // that follows is allowed to close to just outside the escape window of *these* coins.
   const lastPiece = Math.min(
     ...obstacles.map((obstacle) => obstacle.z),
     ...coins.map((coin) => coin.z),
+    ...powerups.map((powerup) => powerup.z),
   );
   const tail = Number.isFinite(lastPiece) ? Math.max(0, lastPiece - (startZ - span)) : span;
 
-  return { obstacles, coins, span, shape, demanding: isDemanding(obstacles), tail, heldLane };
+  return {
+    obstacles,
+    coins,
+    powerups,
+    span,
+    shape,
+    demanding: isDemanding(obstacles),
+    tail,
+    heldLane,
+  };
 }
 
 /**
