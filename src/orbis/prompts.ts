@@ -168,6 +168,28 @@ const eventFragments: Record<Environment, Partial<Record<WorldEvent["type"], str
       "A buried ancient city becomes visible far ahead on the horizon line, with no camera move to reveal it.",
     value_tier:
       "The ancient ruins ignite with golden light as the storm ahead turns bright, the desert visibly answering the pace of the run without any change to the camera's height or angle.",
+    powerup_collected:
+      "The ruins far ahead pulse with golden light and the dunes catch it, the horizon line unmoved.",
+    powerup_spent:
+      "The golden light in the ruins dies back to embers and the storm ahead darkens, the horizon line unmoved.",
+    // The hazard the card advertises, arriving in the picture. Each one is written as the *world*
+    // doing it rather than as a thing happening to anyone on the ground, and each carries its own
+    // camera hold, because a storm is the most tempting reason a model has to move the lens.
+    hazard_started:
+      "A wall of sand sweeps across the horizon and the whole frame fills with blowing grit until the far dunes are barely visible, with no camera move.",
+    // The terms: the world settling into the deal the run was taken under. Written as the world
+    // agreeing rather than as anything being announced — no sign, no text, no camera move, just a
+    // landscape that falls into a rhythm and holds it for the rest of the run.
+    contract_taken:
+      "The distant dunes deepen in colour and the blowing sand settles into a steady, even rhythm that carries on unchanged, with no camera move.",
+    // The best line, beaten: the world recognises the run rather than escalating on it — the far
+    // ground opens up, as if something old had been walked past.
+    ghost_passed:
+      "The far dunes open into a wide, even expanse and the horizon sharpens in clean light, with no camera move.",
+    // A threaded gap: the run's best move, and the world's answer is a held breath rather than an
+    // escalation — the light steadies, the air clears a moment, nothing new appears.
+    perfect_gap:
+      "The blowing sand stalls in the air as if holding its breath and the far ruins sharpen for a moment, with no camera move.",
   },
   city: {
     near_miss: "Traffic becomes chaotic far down the avenue as vehicles swerve and brake.",
@@ -178,6 +200,18 @@ const eventFragments: Record<Environment, Partial<Record<WorldEvent["type"], str
       "A city-wide blackout begins far ahead, leaving only emergency lights and headlights, with no camera move to reveal it.",
     value_tier:
       "Every billboard and window ahead flares at once and the far skyline lights up gold, the city throwing its light across the distant streets without any change to the camera's height or angle.",
+    powerup_collected:
+      "Neon far down the avenue flares up in a bright pulse, the rain catching the light, with no camera move.",
+    powerup_spent:
+      "The bright pulse down the avenue bursts and the neon stutters out, leaving only rain and dark glass ahead, with no camera move.",
+    hazard_started:
+      "Every light in the city fails at once from the horizon towards the camera, leaving only wet asphalt, rain and the dark skyline, with no camera move.",
+    contract_taken:
+      "The far neon steadies into an even pulse and the rain settles into a regular rhythm across the wet avenue, with no camera move.",
+    ghost_passed:
+      "The far avenue opens into clear receding perspective and the neon stops flickering, holding a steady light, with no camera move.",
+    perfect_gap:
+      "The rain seems to hang in the air for a moment and the far avenue goes perfectly still and clear, with no camera move.",
   },
   forest: {
     near_miss: "Birds flee through the canopy and the forest wind intensifies.",
@@ -188,6 +222,18 @@ const eventFragments: Record<Environment, Partial<Record<WorldEvent["type"], str
       "A giant ancient living tree becomes visible far ahead on the horizon line, with the camera staying level rather than tilting up to show it.",
     value_tier:
       "A wave of golden light blooms through the distant undergrowth and the fireflies stream into long bright trails far ahead without any change to the camera's height or angle.",
+    powerup_collected:
+      "A cluster of glowing plants far ahead brightens in a slow pulse, throwing light through the undergrowth with no camera move.",
+    powerup_spent:
+      "The glowing plants far ahead flare once and go dark as the fog draws closer, with no camera move.",
+    hazard_started:
+      "Thick fog rolls across the ground and swallows everything past the nearest trees, the far trunks and canopy fading into flat white, with no camera move.",
+    contract_taken:
+      "The far canopy settles into a slow, even sway and the fireflies gather into a steady drift between the trunks, with no camera move.",
+    ghost_passed:
+      "The undergrowth far ahead thins into open, even ground and the light through the canopy steadies, with no camera move.",
+    perfect_gap:
+      "The fog thins for a moment and the far trunks come back sharp and still, the whole forest holding quiet, with no camera move.",
   },
 };
 
@@ -324,6 +370,20 @@ const audioEvents: Partial<Record<WorldEvent["type"], string>> = {
   speed_milestone: "The ambience swells: wind and motion louder, faster and closer together.",
   distance_milestone: "The ambience opens out, wider and more spacious than before.",
   value_tier: "The ambience swells into a brighter, fuller wash with a rising shimmer over it.",
+  powerup_collected: "A clean bright chime rises over the ambience, short and sharp, then fades.",
+  // The one spent pickup is the shield, spent by taking a hit: the sound of something breaking in
+  // front of the run rather than around it.
+  powerup_spent: "A glassy shatter with a low thud, and the ambience briefly thins out.",
+  // The world's weather, heard: each one takes the bed somewhere it does not normally go, which is
+  // what makes a hazard audible before it is visible.
+  hazard_started: "The ambience drops away and a vast low roar moves in over the top, levelling everything else.",
+  // The deal, heard: the bed settling into a level hold that then keeps going.
+  contract_taken: "The ambience settles into a steady level tone that holds, as if something has agreed.",
+  // A record being overtaken, heard: the same settling as a deal, but warmer and shorter, so the two
+  // acknowledgements are not the same sound with different words over them.
+  ghost_passed: "A warm low chord opens in the ambience and resolves, brief and even.",
+  // A held breath: everything thins and stretches, then comes back.
+  perfect_gap: "The ambience thins to almost nothing and holds for a beat, then returns slowly.",
 };
 
 /** No voices, in every caption: the one thing the audio model must never add to this world. */

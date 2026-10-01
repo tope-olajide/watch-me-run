@@ -40,10 +40,16 @@ const ENVIRONMENTS = ["desert", "city", "forest"];
 const EVENTS = [
   { type: "near_miss" },
   { type: "combo_milestone", combo: 5 },
-  { type: "damage_taken", amount: 1 },
+  { type: "damage_taken", amount: 1, left: 2 },
   { type: "speed_milestone", speed: 14 },
   { type: "distance_milestone", distance: 300 },
   { type: "value_tier", tier: 2, value: 50 },
+  { type: "powerup_collected", powerup: "shield" },
+  { type: "powerup_spent", powerup: "shield" },
+  { type: "hazard_started", hazard: "Sandstorm" },
+  { type: "contract_taken", contract: "Glass cannon" },
+  { type: "ghost_passed", ahead: 24 },
+  { type: "perfect_gap", threads: 3 },
 ];
 const STYLES = ["precise", "reckless", "aggressive", "explorer"];
 

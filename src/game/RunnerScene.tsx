@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Canvas, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Environment, RunState, WorldEvent } from "./run-state";
-import { initialRunState } from "./run-state";
+import { initialRunState, isRunOver, MAX_DAMAGE } from "./run-state";
 import type { CharacterId } from "./character-catalog";
 import {
   buildPattern,
@@ -16,11 +16,15 @@ import {
   speedAt,
   topSpeed,
   type CoinSpawn,
+  type PowerupKind,
+  type PowerupSpawn,
   type Shape,
   type ObstacleKind,
   type ObstacleSpawn,
 } from "./pattern-field";
 import { roadGrade } from "./road-grade";
+import { ghostAhead, ghostAt, LINE_METRES, type RunSummary } from "./records";
+import { hazardAt, hazardFog, hazardLight, publishHazard, readHazard, shovesFor, windFor } from "./hazards";
 import { environmentLook } from "./world-look";
 import { apronField, apronHeight, sampleApron, type ApronField, type ApronSample } from "./apron";
 import {
@@ -404,6 +408,66 @@ const JUMP_MS = 650;
 const SLIDE_MS = 800;
 const STUMBLE_MS = 900;
 
+/* ---- pickups ---------------------------------------------------------------------------------
+ * The three verbs, and how often they arrive. Spaced by distance travelled rather than by chunk, so
+ * a slow world and a fast one offer the same number of pickups per metre of run — which is what makes
+ * them feel like part of the world rather than part of the pacing.
+ */
+/** Metres of run between one pickup and the next. Roughly one every fifteen seconds at cruise. */
+const POWERUP_SPACING = 165;
+/** How high a pickup floats: the coin line, so it is taken at a run and never asks for a jump. */
+const POWERUP_Y = 1.05;
+/** A shield sits until it is spent; the other two are clocks. */
+const MAGNET_SECONDS = 9;
+const DOUBLE_SECONDS = 11;
+/** How far ahead the magnet reaches, in metres of road. */
+const MAGNET_RANGE = 14;
+/**
+ * The look of each pickup: one silhouette and one colour per verb, so what it is can be read at
+ * speed. The colours are deliberately outside the coin palette — a pickup is not currency, and the
+ * one thing it must never be mistaken for is another coin.
+ */
+const POWERUP_STYLE: Record<PowerupKind, { color: string; glow: string }> = {
+  shield: { color: "#e6f7ff", glow: "#5fd0ff" },
+  magnet: { color: "#ffe4f7", glow: "#ff5fd0" },
+  double: { color: "#fff4cf", glow: "#ffc44a" },
+};
+
+/* ---- the skill ceiling --------------------------------------------------------------------------
+ * A run could always be *long*, and the only way to be good at it was to survive. These are the two
+ * things that make it possible to be *good*: a flow value that near misses and threaded gaps build
+ * and a hit wipes, and the one moment the game slows down for — a gap taken between two obstacles in
+ * the adjacent lanes at once.
+ */
+/**
+ * What a near miss adds to flow, and what threading a gap adds.
+ *
+ * The numbers are set so that *breaking even* is a rhythm: a near miss every five seconds exactly
+ * offsets the drain, so a player who is merely close to things holds a steady meter, and the only way
+ * up is to be close to things more often or to thread the gaps. The first values measured this way
+ * were wrong in a way worth recording — 0.1 a near miss against 0.045 a second of drain left the
+ * meter pinned near 0.13 after seventeen near misses, which is a ceiling nobody can reach and a
+ * keyboard-smash away from the reward being reserved for the probe.
+ */
+const FLOW_NEAR = 0.15;
+const FLOW_THREAD = 0.34;
+/** Flow lost per second of clean running: a full meter is worth about half a minute of not trying. */
+const FLOW_DECAY = 0.03;
+/** How close two obstacles in opposite side lanes have to be to count as one gap. */
+const GAP_METRES = 4;
+/**
+ * The threading moment: how long the world holds its breath, how slowly it does it, and how much road
+ * has to pass before it may do it again.
+ *
+ * The cooldown is not decoration. A player who learns to *farm* the middle — the pair shape leaves the
+ * middle open one time in three, and a run that only ever sits there threads them one after another —
+ * would otherwise spend a fifth of the run in slow motion, which stops being a moment. The thread
+ * itself still counts and still pays while the clock is on cooldown; only the flourish waits.
+ */
+const SLOWMO_SECONDS = 0.42;
+const SLOWMO_SCALE = 0.45;
+const SLOWMO_COOLDOWN_METRES = 90;
+
 type PlayerAnimation = "run" | "jump" | "slide" | "stumble";
 
 type RunnerSceneProps = {
@@ -411,19 +475,92 @@ type RunnerSceneProps = {
   characterId: CharacterId;
   paused: boolean;
   onWorldEvent: (state: RunState, event: WorldEvent) => void;
-  /** Throttled run-state feed for HUD readouts, so distance and speed move smoothly. */
-  onProgress?: (state: RunState) => void;
+  /**
+   * Throttled run-state feed for HUD readouts, so distance and speed move smoothly. The ghost rides
+   * along because it is read from the same frame as the distance it is compared against.
+   */
+  onProgress?: (state: RunState, ghost: { lane: number; ahead: number } | null) => void;
   /**
    * Fired on every token with what it actually paid. Deliberately separate from `onWorldEvent`: a
    * coin is not a world event, and routing it through the director would let a pickup steer the
    * generated world.
    */
   onToken?: (value: number) => void;
+  /**
+   * Fired once, on the hit that ends the run.
+   *
+   * The run used to have no end: `damage` accumulated and `dangerLevel` rose, and nothing ever acted
+   * on either. This is the moment the game admits the run is over — the interface puts a card up, and
+   * the simulation winds down behind it. The state handed over is the run's last frame, so the card
+   * reports the score the simulation actually finished with rather than one the HUD happened to have.
+   */
+  /**
+   * `line` is where the run went, as flat `distance, lane, score, time` quads every `LINE_METRES` —
+   * the record's ghost is read from it, so a run that sets a best also leaves a line to race.
+   */
+  onRunEnd?: (state: RunState, line: number[]) => void;
+  /**
+   * Which attempt of this world is being run. Changing it remounts the simulation — that is the
+   * restart: every ref the run owns (state, obstacles, coins, timers) is re-initialised together, and
+   * the canvas, the world layer and the session are untouched, so "run again" is instant instead of a
+   * trip back through the loading screen.
+   */
+  attempt?: number;
+  /**
+   * The terms the run was taken under: how many hits it survives, what a token pays, what a near miss
+   * adds, and whether the world's weather runs at all.
+   *
+   * Passed in rather than read from the contract module inside the simulation, because the simulation is
+   * a pure-ish object with props: a run's terms are decided by the interface before the line, and a
+   * second read of the store down here could disagree with the card the player was shown.
+   */
+  terms?: RunTerms;
+  /**
+   * The best run this world has, when it has one: the ghost's source.
+   *
+   * Passed in rather than read from the store down here, for the same reason the terms are: the run is
+   * a pure-ish simulation with props, and a second read of `localStorage` inside it could disagree
+   * with the number the menu is showing.
+   */
+  ghost?: RunSummary | null;
+};
+
+/** The part of a contract the simulation actually runs on. */
+export type RunTerms = {
+  name: string;
+  hits: number;
+  tokenScale: number;
+  flowScale: number;
+  hazards: boolean;
 };
 
 /** Content in flight: a spawn from the field, plus the identity this scene gives it. */
 type Obstacle = ObstacleSpawn & { id: number };
-type Coin = CoinSpawn & { id: number };
+/**
+ * A coin, plus the sideways offset a magnet moves it by.
+ *
+ * `x` is an offset from the coin's lane rather than a position, because the lane is what every other
+ * rule in the run reads — the audit, the placement, the collection — and a coin that has been pulled
+ * by a magnet is still a coin in the lane it was placed in.
+ */
+type Coin = CoinSpawn & { id: number; x?: number };
+type Powerup = PowerupSpawn & { id: number };
+
+/**
+ * Which lane a world-space x is standing in.
+ *
+ * Published for the development readout rather than used by the run: the ghost's own numbers say where
+ * the best line *was*, and this is the one number that says where the mark on the road actually is — a
+ * marker drawn in the wrong lane, or never drawn at all, would leave every other reading correct.
+ */
+function laneAtX(x: number): number {
+  const lanes: readonly number[] = LANES;
+  let nearest = 0;
+  for (let index = 1; index < lanes.length; index += 1) {
+    if (Math.abs(lanes[index] - x) < Math.abs(lanes[nearest] - x)) nearest = index;
+  }
+  return nearest;
+}
 
 function canvasContext(width: number, height: number) {
   const canvas = document.createElement("canvas");
@@ -617,6 +754,23 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
     document.documentElement.style.setProperty("--terrain-ink", String(terrainDetail.ink));
   }, [grade, terrainDetail]);
 
+  /**
+   * The grade the road and the apron were drawn with, before any weather got to them.
+   *
+   * Held in a ref because the blackout writes the material's colour every frame, and the grade is the
+   * thing it has to be written *from*: multiplying the live colour by the light factor again and again
+   * would darken the road by the frame rate rather than by the hazard. The effect below re-reads it
+   * whenever the world's measured tone moves.
+   */
+  const baseRoad = useRef(new THREE.Color().setRGB(...grade.color));
+  const baseTerrain = useRef(new THREE.Color().setRGB(grade.terrain, grade.terrain, grade.terrain));
+  const roadMaterial = useRef<THREE.MeshStandardMaterial>(null);
+  const terrainMaterial = useRef<THREE.MeshStandardMaterial>(null);
+  useEffect(() => {
+    baseRoad.current.setRGB(...grade.color);
+    baseTerrain.current.setRGB(grade.terrain, grade.terrain, grade.terrain);
+  }, [grade]);
+
   useFrame((_, delta) => {
     // Each surface is scrolled one tile per `speed * delta` metres, divided by the world size of its
     // own tile, so the two carry the same ground speed despite repeating at different scales.
@@ -624,6 +778,16 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
     // Only the colour map scrolls. The alpha map is the depth fade and stays where the world put it,
     // which is what lets the apron be redrawn under the runner without the fade leaving its depth.
     terrainPattern.offset.y += (speedRef.current * delta) / terrainDetail.tile;
+
+    /* The blackout, which is the one hazard that hurts the run by taking light rather than ground.
+       The road's own lane markings are painted into the colour map, so dimming the material dims the
+       only thing on the ground that says where the lanes are: the cost is exactly the information
+       the world was giving away for free. It stops at 0.3 rather than at black on purpose — a road
+       nobody can read is not a hazard, it is a dead run, and the hazard has to be answerable. */
+    const hazard = readHazard();
+    const light = hazard.kind === "blackout" ? hazardLight(hazard.intensity) : 1;
+    if (roadMaterial.current) roadMaterial.current.color.copy(baseRoad.current).multiplyScalar(light);
+    if (terrainMaterial.current) terrainMaterial.current.color.copy(baseTerrain.current).multiplyScalar(light);
   });
 
   return (
@@ -640,6 +804,7 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
       />
       <mesh geometry={terrain} renderOrder={0} receiveShadow>
         <meshStandardMaterial
+          ref={terrainMaterial}
           map={terrainPattern}
           alphaMap={terrainFade}
           color={terrainColor}
@@ -653,6 +818,7 @@ function World({ environment, speedRef }: { environment: Environment; speedRef: 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, ROAD_CENTER_Z]} receiveShadow>
         <planeGeometry args={[ROAD_WIDTH, ROAD_LENGTH]} />
         <meshStandardMaterial
+          ref={roadMaterial}
           map={pattern}
           alphaMap={fade}
           color={grade.color}
@@ -893,6 +1059,12 @@ function Roadside({ environment, speedRef }: { environment: Environment; speedRe
       for (const mesh of parts) mesh.instanceMatrix.needsUpdate = true;
     }
 
+    // A blackout is a city going dark, and the signage is what a city *is*: the panels carry a frame
+    // of the live world (`world-frame`), and dimming them is what makes the hazard visible on the
+    // scenery the run is passing rather than only in the sky ahead.
+    const hazard = readHazard();
+    panelMaterial.color.setScalar(hazard.kind === "blackout" ? hazardLight(hazard.intensity) : 1);
+
     const panelMesh = panels.current;
     if (panelMesh) {
       plan.panels.forEach((panel, index) => {
@@ -997,11 +1169,55 @@ function ObstacleShape({ environment, kind }: { environment: Environment; kind: 
         </mesh>
       );
     }
+    // The mountain a run can only go around. The desert's is a standing remnant — a weathered
+    // eight-sided column with a chipped cap and a block fallen at its foot — because a tall flat
+    // rectangle standing in the sand reads as a bug in the world rather than as part of it. The
+    // city's is a lit barrier: a dark panel between two neon strips on a plinth, which is the same
+    // silhouette the road already expects with something to look at in it.
+    if (environment === "desert") {
+      return (
+        <group>
+          <mesh position={[0, 1.15, 0]} castShadow>
+            <cylinderGeometry args={[0.36, 0.5, 2.3, 8]} />
+            <meshStandardMaterial color={look.stone} roughness={0.95} flatShading />
+          </mesh>
+          <mesh position={[0.08, 2.34, 0.04]} rotation={[0.06, 0.5, -0.12]} castShadow>
+            <boxGeometry args={[0.78, 0.22, 0.72]} />
+            <meshStandardMaterial color={look.wall} roughness={0.9} flatShading />
+          </mesh>
+          <mesh position={[-0.52, 0.16, 0.2]} rotation={[0, 0.7, 0.08]} castShadow>
+            <boxGeometry args={[0.5, 0.32, 0.44]} />
+            <meshStandardMaterial color={look.wall} roughness={0.95} flatShading />
+          </mesh>
+        </group>
+      );
+    }
     return (
-      <mesh position={[0, 1.25, 0]} castShadow>
-        <boxGeometry args={environment === "desert" ? [0.95, 2.5, 0.75] : [1.45, 2.4, 0.95]} />
-        <meshStandardMaterial color={look.wall} roughness={0.75} metalness={environment === "city" ? 0.35 : 0.05} />
-      </mesh>
+      <group>
+        <mesh position={[0, 1.34, 0]} castShadow>
+          <boxGeometry args={[1.45, 2.2, 0.42]} />
+          <meshStandardMaterial color={look.wall} roughness={0.42} metalness={0.5} />
+        </mesh>
+        {[-1, 1].map((side) => (
+          <mesh key={side} position={[side * 0.62, 1.34, 0.23]}>
+            <boxGeometry args={[0.09, 2.05, 0.03]} />
+            <meshStandardMaterial
+              color={look.blockAccent}
+              emissive={look.blockAccent}
+              emissiveIntensity={1.15}
+              roughness={0.3}
+            />
+          </mesh>
+        ))}
+        <mesh position={[0, 2.52, 0]}>
+          <boxGeometry args={[1.5, 0.09, 0.46]} />
+          <meshStandardMaterial color={look.blockAccent} emissive={look.blockAccent} emissiveIntensity={0.9} roughness={0.3} />
+        </mesh>
+        <mesh position={[0, 0.08, 0]} castShadow>
+          <boxGeometry args={[1.6, 0.16, 0.7]} />
+          <meshStandardMaterial color={look.block} roughness={0.6} metalness={0.35} />
+        </mesh>
+      </group>
     );
   }
 
@@ -1029,6 +1245,14 @@ function ObstacleShape({ environment, kind }: { environment: Environment; kind: 
           emissiveIntensity={environment === "city" ? 0.8 : 0.2}
         />
       </mesh>
+      {/* The city's jumpable gets one lit bar on its face: the same object the lane already reads as
+          a crouched obstacle, with the light the avenue is made of on it. */}
+      {environment === "city" && (
+        <mesh position={[0, 0.42, 0.47]}>
+          <boxGeometry args={[0.72, 0.16, 0.03]} />
+          <meshStandardMaterial color={look.coin} emissive={look.coinGlow} emissiveIntensity={0.9} roughness={0.3} />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -1052,6 +1276,9 @@ function CoinPiece({ coin, environment }: { coin: Coin; environment: Environment
   useFrame(({ clock }, delta) => {
     if (!group.current) return;
     group.current.visible = !coin.collected;
+    // The magnet's offset lives here rather than in the render, because the coin's position is
+    // already being written every frame and a pulled coin is only a lane plus an offset.
+    group.current.position.x = LANES[coin.lane] + (coin.x ?? 0);
     group.current.position.z = coin.z;
     group.current.position.y = coin.y + Math.sin(clock.elapsedTime * 3 + coin.id) * 0.07;
     group.current.rotation.y += delta * 2.6;
@@ -1071,6 +1298,94 @@ function CoinPiece({ coin, environment }: { coin: Coin; environment: Environment
           emissiveIntensity={0.85}
           roughness={0.35}
           metalness={0.4}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+/**
+ * A pickup in the world.
+ *
+ * Same contract as a coin — position written every frame from the simulation's copy, hidden rather
+ * than unmounted when taken — but with a silhouette per verb instead of one currency shape, because
+ * the one thing a pickup must never look like at speed is a coin. Each carries a soft additive shell
+ * so it reads as something glowing *above* the road rather than another object lying on it, and the
+ * magnet keeps its face to the camera: a horseshoe seen edge-on is a line.
+ */
+function PowerupPiece({ pickup }: { pickup: Powerup }) {
+  const group = useRef<THREE.Group>(null);
+  const look = POWERUP_STYLE[pickup.kind];
+
+  useFrame(({ clock }, delta) => {
+    if (!group.current) return;
+    group.current.visible = !pickup.collected;
+    group.current.position.z = pickup.z;
+    group.current.position.y = POWERUP_Y + Math.sin(clock.elapsedTime * 2.2 + pickup.id) * 0.1;
+    if (pickup.kind === "magnet") group.current.rotation.z += delta * 1.2;
+    else group.current.rotation.y += delta * 1.4;
+  });
+
+  return (
+    <group ref={group} position={[LANES[pickup.lane], POWERUP_Y, pickup.z]}>
+      {pickup.kind === "shield" ? (
+        <mesh>
+          <octahedronGeometry args={[0.34, 0]} />
+          <meshStandardMaterial
+            color={look.color}
+            emissive={look.glow}
+            emissiveIntensity={0.9}
+            roughness={0.2}
+            metalness={0.5}
+          />
+        </mesh>
+      ) : pickup.kind === "magnet" ? (
+        <group>
+          <mesh>
+            <torusGeometry args={[0.26, 0.09, 10, 24, Math.PI]} />
+            <meshStandardMaterial
+              color={look.color}
+              emissive={look.glow}
+              emissiveIntensity={0.9}
+              roughness={0.25}
+              metalness={0.5}
+            />
+          </mesh>
+          {/* The pole tips: the two ends of the horseshoe, in the accent colour, which is what makes
+              the shape unmistakably a magnet rather than a broken ring. */}
+          {[-1, 1].map((side) => (
+            <mesh key={side} position={[side * 0.26, -0.08, 0]}>
+              <cylinderGeometry args={[0.09, 0.09, 0.16, 10]} />
+              <meshStandardMaterial color={look.glow} emissive={look.glow} emissiveIntensity={0.7} roughness={0.35} />
+            </mesh>
+          ))}
+        </group>
+      ) : (
+        <group>
+          {/* Two of a thing: the only pickup whose meaning is an amount, so it is the only one drawn
+              twice. */}
+          {[-0.13, 0.13].map((offset) => (
+            <mesh key={offset} position={[0, offset, 0]} rotation={[0, 0, Math.PI / 4]}>
+              <boxGeometry args={[0.3, 0.3, 0.3]} />
+              <meshStandardMaterial
+                color={look.color}
+                emissive={look.glow}
+                emissiveIntensity={0.9}
+                roughness={0.25}
+                metalness={0.45}
+              />
+            </mesh>
+          ))}
+        </group>
+      )}
+      <mesh scale={1.55}>
+        <sphereGeometry args={[0.32, 14, 14]} />
+        <meshBasicMaterial
+          color={look.glow}
+          transparent
+          opacity={0.16}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
         />
       </mesh>
     </group>
@@ -1137,17 +1452,73 @@ function Player({
 
 /* ---------------------------------------------------------------------------- simulation */
 
-function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onProgress, onToken }: RunnerSceneProps) {
+/** What a run is played under when nobody said otherwise: the standard deal, in one place. */
+/**
+ * The most line a run may carry, in numbers: 1,000 samples, which is 20 km.
+ *
+ * A bound rather than a budget: the worlds' speeds are bounded and a run that outlives 20 km of road
+ * has long since stopped being a run, so this is the length at which a line is a bug rather than a run.
+ */
+const LINE_CAP = 4000;
+
+/** What a run is played under when nobody said otherwise: the standard deal, in one place. */
+const STANDARD_TERMS: RunTerms = {
+  name: "Standard",
+  hits: MAX_DAMAGE,
+  tokenScale: 1,
+  flowScale: 1,
+  hazards: true,
+};
+
+function RunnerSimulation({
+  environment,
+  characterId,
+  paused,
+  onWorldEvent,
+  onProgress,
+  onToken,
+  onRunEnd,
+  ghost = null,
+  terms = STANDARD_TERMS,
+}: RunnerSceneProps) {
   const [lane, setLane] = useState(1);
   const [jumping, setJumping] = useState(false);
   const [sliding, setSliding] = useState(false);
   const [stumbling, setStumbling] = useState(false);
+  /**
+   * The run is over, and what follows is the wind-down.
+   *
+   * Two flags rather than one: the ref is what the frame loop reads every frame (it must not wait for
+   * a render to know the run is done), and the state is what the render reads for the pose. A single
+   * state would let a frame of the old run slip through, and a single ref would leave the runner
+   * jogging on the spot through its own defeat.
+   */
+  const over = useRef(false);
+  const [defeated, setDefeated] = useState(false);
   // The simulation is the source of truth and lives in refs: mirroring it through React state
   // every frame is both wasteful and, when it lags, wrong — distance used to advance by a
   // single frame's worth per state update, and obstacles visibly jumped once per second.
   const runState = useRef<RunState>(initialRunState(environment));
   const obstacles = useRef<Obstacle[]>([]);
   const coins = useRef<Coin[]>([]);
+  const powerups = useRef<Powerup[]>([]);
+  /**
+   * This run's line: `distance, lane, score, time` every 20 m, the shape the ghost is read from.
+   *
+   * Recorded in the simulation because the lane is a simulation fact — nothing outside this file knows
+   * which lane the run took at metre 340 except the run itself. It is only handed over when the run
+   * ends, and only a run that *sets* a best has its line written to the store (`fileRun`), so a line is
+   * always a line the player can be asked to race.
+   */
+  const line = useRef<number[]>([]);
+  /** What the ghost was doing at the metre the run is at, for the HUD and the development readout. */
+  const ghostStatus = useRef<{ lane: number; ahead: number } | null>(null);
+  /** The run has already been told it is ahead of its best: the answer happens once. */
+  const ghostFired = useRef(false);
+  /** The marker standing where the best line was, moved rather than re-rendered every frame. */
+  const ghostMarker = useRef<THREE.Group | null>(null);
+  /** The distance at which the next pickup should appear. Advanced when one is actually laid. */
+  const nextPowerupAt = useRef(POWERUP_SPACING);
   const frontier = useRef(-6);
   /**
    * The shape of the chunk about to be built, chosen one step early and held until it is built.
@@ -1171,10 +1542,52 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
   const impact = useRef(0);
   /** Set on impact and decayed over about a second: the runner visibly recovers. */
   const stumbleSlow = useRef(0);
+  /** The lane the simulation is actually reading, for the development readout. */
+  const laneRef = useRef(1);
+  /** Which hazard has already been announced, and how many of its shoves have landed. */
+  const announcedHazard = useRef(-1);
+  /** How many hazards this run has actually announced, for the development readout. */
+  const hazardFired = useRef(0);
+  // The run's terms are not announced from here: the director drops every ask for `RUN_QUIET_MS`
+  // after a run takes the world, and this file's clock runs on frame deltas, which in a slow frame
+  // can outrun the wall clock the director reads. `RunExperience` asks for it instead, on the
+  // interface's own clock — see the effect there.
+  const shoves = useRef(0);
+  /** A gust's leftover push, decaying: what the world layer feels of the storm. */
+  const gust = useRef(0);
+  const gustDir = useRef<-1 | 1>(-1);
+  /** The threading moment: its clock, the camera's pull-in, and the time scale the run runs at. */
+  const slowmo = useRef(0);
+  const punch = useRef(0);
+  const timeScale = useRef(1);
+  /** The distance the next threading moment may slow time at. */
+  const slowmoReadyAt = useRef(0);
+  /** The camera the run is drawn with, for the development readout's dolly reading. */
+  const cameraRef = useRef<THREE.Camera | null>(null);
   /** Seconds since this run began, for the launch surge. */
   const launch = useRef(0);
   const [worldVersion, setWorldVersion] = useState(0);
   const timers = useRef<number[]>([]);
+  /** The scene clock's reading while a pause holds it — see the pause branch in the frame loop. */
+  const heldClock = useRef<number | null>(null);
+
+  /**
+   * Writes where the run is: once every `LINE_METRES`, and once more when it ends.
+   *
+   * The last sample is forced rather than waited for, because the whole reason the line exists is to
+   * say where the best run *stopped* — a line that ends 19 m short of the record it belongs to would
+   * put the ghost a step behind the number it is named after. A forced sample closer than a couple of
+   * metres to the previous one is dropped instead, so "where it stopped" is never two samples stacked
+   * on the same metre.
+   */
+  const recordLine = useCallback((distance: number, time: number, force = false) => {
+    const flat = line.current;
+    const last = flat.length >= 4 ? flat[flat.length - 4] : -LINE_METRES;
+    const gap = distance - last;
+    if (force ? gap < 2 : gap < LINE_METRES) return;
+    if (flat.length >= LINE_CAP) return;
+    flat.push(Math.round(distance), laneRef.current, Math.round(runState.current.score), Math.round(time * 100) / 100);
+  }, []);
 
   const scheduleReset = useCallback((reset: () => void, ms: number) => {
     const timer = window.setTimeout(() => {
@@ -1182,6 +1595,73 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
       reset();
     }, ms);
     timers.current.push(timer);
+  }, []);
+
+  // Development-only readout, for the same reason as `window.__roadside`: the content field near the
+  // runner lives in the WebGL scene and nowhere in the DOM, so "which pickup was in which lane, and
+  // did the magnet actually bend that coin" is not a question a screenshot can answer. What is
+  // reported is the field *in front of* the runner — z below `PLAYER_Z` is the direction the run
+  // travels — because a piece two hundred metres up the road is a fact about the generator, and the
+  // generator can be read directly in `pattern-field.ts`.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const state = () => runState.current;
+    const round = (value: number) => Math.round(value * 10) / 10;
+    (window as unknown as { __runfield?: () => unknown }).__runfield = () => ({
+      powerups: powerups.current
+        .filter((pickup) => pickup.z > PLAYER_Z - 70)
+        .map((pickup) => ({
+          id: pickup.id,
+          kind: pickup.kind,
+          lane: pickup.lane,
+          z: round(pickup.z),
+          collected: pickup.collected,
+        })),
+      obstacles: obstacles.current
+        .filter((obstacle) => !obstacle.passed && obstacle.z > PLAYER_Z - 40)
+        .map((obstacle) => ({ lane: obstacle.lane, kind: obstacle.kind, z: round(obstacle.z) })),
+      // The coins in front of the runner, with the offset a magnet has moved them by: the pull is a
+      // number in the simulation and nothing in the DOM.
+      coins: coins.current
+        .filter((coin) => !coin.collected && coin.z > PLAYER_Z - 40)
+        .map((coin) => ({ lane: coin.lane, x: Math.round((coin.x ?? 0) * 100) / 100, z: round(coin.z) })),
+      // The weather and the lane, with the field: what the world is doing to the run, and where the
+      // run actually is — the two things a shove moves without a key being pressed.
+      hazard: { ...state().hazard },
+      hazardFired: hazardFired.current,
+      lane: laneRef.current,
+      // The skill ceiling, as the simulation is actually running it: the flow value, the gaps it has
+      // threaded, the run's own clock (which is the only place a threading moment is visible), and
+      // where the camera has been dollied to.
+      flow: Math.round(state().flow * 1000) / 1000,
+      threads: state().threads,
+      speed: Math.round(state().speed * 10) / 10,
+      timeScale: Math.round(timeScale.current * 1000) / 1000,
+      cameraZ: cameraRef.current ? Math.round(cameraRef.current.position.z * 1000) / 1000 : null,
+      shield: state().shield,
+      magnet: round(state().magnet),
+      doubleTokens: round(state().doubleTokens),
+      distance: Math.round(state().distance),
+      damage: state().damage,
+      tokens: state().coins,
+      score: Math.round(state().score),
+      // What a token is worth at this distance, from the same function the scoring and the HUD use:
+      // the only way to check a doubled token paid double without re-deriving the curve here.
+      tokenValue: Math.round(coinValueAt(environment, state().distance) * 100) / 100,
+      // The best line, as the run is reading it: the lane the ghost mark is standing in and the metres
+      // this run is ahead of (or behind) its best at the same second. Null when there is no best, or
+      // the run has gone past the end of the line.
+      ghost: ghostStatus.current,
+      line: line.current.length / 4,
+      // The mark itself — the one thing the ghost's numbers cannot prove: which lane the mesh on the
+      // road is actually standing in, and whether it is drawn at all.
+      ghostMark: ghostMarker.current
+        ? { on: ghostMarker.current.visible, lane: laneAtX(ghostMarker.current.position.x) }
+        : null,
+    });
+    return () => {
+      delete (window as unknown as { __runfield?: unknown }).__runfield;
+    };
   }, []);
 
   useEffect(() => () => {
@@ -1192,6 +1672,9 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // A paused run takes no input: the keys would change the lane behind the pause card and then
+      // the run would lurch the moment it resumed.
+      if (paused) return;
       const key = event.key.toLowerCase();
       if (event.key === "ArrowLeft" || key === "a") {
         setLane((value) => Math.max(0, value - 1));
@@ -1215,51 +1698,172 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [scheduleReset]);
+  }, [paused, scheduleReset]);
 
-  useFrame(({ camera, clock }, delta) => {
+  useFrame(({ camera, clock, scene }, delta) => {
     if (paused) {
-      speedRef.current = environmentPace[environment].baseSpeed;
-      publishWorldMotion(environment, speedRef.current, lateral.current, impact.current, clock.elapsedTime, true);
+      /* ---- the whole world holds still, not just the run ----
+         The scene's animations — the road's scroll, the roadside's drift, the coins' and pickups'
+         bob, the runner's cycle and sway, the camera's shake — all read the renderer's clock: `delta`
+         for the moving parts, `elapsedTime` for the oscillating ones. Holding the run alone left the
+         road and the runner visibly alive behind the pause card, so the clock itself is stopped
+         here: every reader of it reads zero, and nothing has to know a pause exists. `Clock.start()`
+         resets its own elapsed time, so the reading is kept while the clock is held and put back on
+         the way out — the run's line timestamps and the ghost race are measured in this clock and
+         have to carry on from where they were. */
+      if (clock.running) {
+        clock.stop();
+        heldClock.current = clock.elapsedTime;
+      }
+      speedRef.current = 0;
+      publishWorldMotion(environment, 0, lateral.current, impact.current, clock.elapsedTime, true);
       return;
+    }
+    if (!clock.running) {
+      clock.start();
+      if (heldClock.current !== null) clock.elapsedTime = heldClock.current;
+      heldClock.current = null;
     }
 
     const state = runState.current;
     const difficulty = difficultyAt(environment, state.distance);
-    const distance = state.distance + delta * state.speed;
-    if (stumbleSlow.current > 0) stumbleSlow.current = Math.max(0, stumbleSlow.current - delta * 1.1);
+    cameraRef.current = camera;
+
+    /* ---- the run's own clock -------------------------------------------------------------------
+       A threaded gap is the one moment the game slows down for: a third of a second at 0.45 speed,
+       which is *time*, not speed — the run and everything driven by it (the content field, the
+       roadside, the token clocks, the distance trickle) slows together, so the moment reads as the
+       world holding its breath rather than as the player being punished with less speed. The camera
+       dollies in with it and eases back out, which is the camera's whole reaction: no roll, no whip,
+       because the frame the generated world is locked to must not move.
+
+       `slowmo` decays in real seconds rather than in game seconds on purpose: scaling the recovery by
+       the slow-motion itself would make the effect longest exactly when it is most useful, and it is
+       a flourish, not a resource. */
+    if (slowmo.current > 0) slowmo.current = Math.max(0, slowmo.current - delta);
+    if (punch.current > 0) punch.current = Math.max(0, punch.current - delta * 2.6);
+    timeScale.current = THREE.MathUtils.damp(timeScale.current, slowmo.current > 0 ? SLOWMO_SCALE : 1, 9, delta);
+    const step = delta * timeScale.current;
+
+    const distance = state.distance + step * state.speed;
+    if (stumbleSlow.current > 0) stumbleSlow.current = Math.max(0, stumbleSlow.current - step * 1.1);
     launch.current = Math.min(LAUNCH_SECONDS, launch.current + delta);
     const surge = (1 - launch.current / LAUNCH_SECONDS) ** 1.7 * LAUNCH_BOOST;
     const cruise = speedAt(environment, distance);
-    const speed = (cruise + surge) * (1 - stumbleSlow.current * 0.32);
-    speedRef.current = speed;
+    // A finished run winds down rather than stopping dead: the world coasts to a halt under the last
+    // stumble, so the defeat reads as the run giving out and not as the simulation being switched
+    // off. Everything downstream of this — the roadside, the world layer's parallax, the runner's
+    // cycle speed — is driven by `speedRef`, so they all slow together, on their own curves.
+    const speed = over.current
+      ? THREE.MathUtils.damp(state.speed, 0, 2.4, delta)
+      : (cruise + surge) * (1 - stumbleSlow.current * 0.32);
+    // The *scaled* speed is what the rest of the game is told: the runner's cycle, the roadside's
+    // scroll and the video layer's own motion all take their cue from here, so a threading moment
+    // slows the whole world together rather than only the things this file moves itself.
+    speedRef.current = speed * timeScale.current;
 
     state.distance = distance;
     state.speed = speed;
-    state.score += delta * 12;
+    // The distance trickle stops with the run: a stationary runner must not keep earning. What it
+    // pays is what the run is *playing* like: at full flow the ground alone is worth two and a half
+    // times what coasting is, which is the skill ceiling made arithmetic rather than a label.
+    if (!over.current) state.score += step * (12 + state.flow * 18);
+    // One sample of the line every `LINE_METRES`, written from here because the lane and the score are
+    // read a frame before they are rendered: a line sampled off the HUD would be 200 ms of lies.
+    recordLine(distance, clock.elapsedTime);
+
+    // Flow drains with the metre and is wiped by a hit (see the collision branch); near misses and
+    // threaded gaps are what build it. Decay in game seconds, so a slow-motion moment does not also
+    // cost flow faster than the run it is slowing.
+    state.flow = Math.max(0, state.flow - step * FLOW_DECAY);
+
+    // The pickup clocks. They run in the simulation's own seconds, so a pause stops them with
+    // everything else rather than burning a shield's worth of magnet behind a pause screen — and they
+    // run on the run's own clock, so a slow-motion moment is not a free eleven seconds of doubled
+    // tokens.
+    if (state.magnet > 0) state.magnet = Math.max(0, state.magnet - step);
+    if (state.doubleTokens > 0) state.doubleTokens = Math.max(0, state.doubleTokens - step);
+
+    /* ---- the world's own weather ---- */
+    const hazard = hazardAt(environment, distance, difficulty, terms.hazards);
+    publishHazard(hazard);
+    state.hazard.kind = hazard.kind;
+    state.hazard.name = hazard.name;
+    state.hazard.phase = hazard.phase;
+    state.hazard.intensity = hazard.intensity;
+
+    // Announced once per hazard, on arrival rather than on the warning: the warning is the
+    // interface's to give (the badge and the sky change), and the world's answer is to the storm
+    // being *here*. It is a play event, so it cannot be displaced by the milestone chatter.
+    if (!over.current && hazard.phase === "active" && hazard.index !== announcedHazard.current) {
+      announcedHazard.current = hazard.index;
+      shoves.current = 0;
+      hazardFired.current += 1;
+      onWorldEvent({ ...state, speed }, { type: "hazard_started", hazard: hazard.name });
+    }
+
+    // The desert's shove: one whole lane, and the run has to take it back. `shovesFor` counts how
+    // many gusts the storm owes by now, so the rhythm is a function of the distance rather than of
+    // the frame rate — and a frame that lands two is two lanes, in the right directions.
+    if (!over.current && hazard.kind === "shove" && hazard.phase === "active") {
+      const due = shovesFor(hazard.since);
+      while (shoves.current < due) {
+        const wind = windFor(hazard.index, shoves.current);
+        shoves.current += 1;
+        gust.current = 1;
+        gustDir.current = wind;
+        setLane((value) => THREE.MathUtils.clamp(value + wind, 0, LANE_COUNT - 1));
+      }
+    }
+    gust.current = Math.max(0, gust.current - delta * 1.6);
+
+    // The forest's fog is the only hazard the WebGL layer cannot borrow from the DOM: the video is
+    // behind this canvas, so a screen-space scrim cannot take the distance out of the road and the
+    // scenery. It is damped rather than set, so the world closes in and opens out over a second or
+    // two instead of switching — the same reason `intensity` is continuous at every phase join.
+    const fog = scene.fog as THREE.Fog | null;
+    if (fog) {
+      const target = hazardFog(hazard, difficulty);
+      fog.near = THREE.MathUtils.damp(fog.near, target.near, 2.4, delta);
+      fog.far = THREE.MathUtils.damp(fog.far, target.far, 2.4, delta);
+    }
 
     // Keep the generated world and the runner moving together: the camera opens up as the
     // run accelerates, and the video layer scales with the same value. The lateral travel is damped
     // on the same curve the runner's own lane change is, so the body, the camera, and the ground it
     // is stepping across all leave the old lane together and settle together.
-    stride.current = THREE.MathUtils.damp(stride.current, LANES[lane] ?? 0, 8, delta);
+    stride.current = THREE.MathUtils.damp(stride.current, LANES[lane] ?? 0, 8, step);
     lateral.current = stride.current / Math.abs(LANES[0]);
     impact.current = Math.max(0, impact.current - delta * 2.2);
 
     // Half of the step is the runner crossing the frame and half is the ground sweeping under it; see
     // `CAMERA_LATERAL_FOLLOW`. The rig is not re-aimed, so the ground shears with real perspective.
     const cameraX = stride.current * CAMERA_LATERAL_FOLLOW;
+    // Two reactions, one dolly: the threaded gap pulls the camera in hard for a moment, and a run in
+    // flow sits a little closer the whole time it holds. Both are *position*, never angle — the
+    // generated horizon is locked against the field of view, and a dolly changes neither, so the
+    // picture the world layer is holding together is untouched.
+    const dolly = 11.5 - punch.current * 0.9 - state.flow * 0.35;
     if (impact.current > 0.01) {
       camera.position.set(
         cameraX + Math.sin(clock.elapsedTime * 48) * impact.current * 0.07,
         3.4 - impact.current * 0.3,
-        11.5 + impact.current * 0.25,
+        dolly + impact.current * 0.25,
       );
     } else {
-      camera.position.set(cameraX, 3.4, 11.5);
+      camera.position.set(cameraX, 3.4, dolly);
     }
 
-    publishWorldMotion(environment, speed, lateral.current, impact.current, clock.elapsedTime);
+    publishWorldMotion(
+      environment,
+      speed * timeScale.current,
+      // The gust is folded into the lateral travel the world layer already parallaxes by, so the
+      // whole picture leans with the storm while the runner's own ground (the road, the content
+      // field) keeps moving straight: the world is being pushed, not the camera.
+      lateral.current + gust.current * gustDir.current * 0.18,
+      impact.current,
+      clock.elapsedTime,
+    );
 
     // The field of view opens against this world's top speed for the same reason the variable does.
     const perspective = camera as THREE.PerspectiveCamera;
@@ -1275,7 +1879,9 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
     }
 
     /* ---- spawn and scroll the content field ---- */
-    frontier.current += delta * speed;
+    // From here on the world moves on the run's own clock (`step`), which is `delta` except in a
+    // threading moment.
+    frontier.current += step * speed;
     let spawned = false;
     let guard = 0;
     // The chunk that can ask for two lane changes needs a longer lead-in than the gap alone would
@@ -1284,9 +1890,23 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
     if (!upcoming.current) upcoming.current = pickShape(difficulty);
     while (frontier.current > -SPAWN_HORIZON && guard < 8) {
       guard += 1;
-      const pattern = buildPattern(environment, difficulty, frontier.current, upcoming.current);
+      const startZ = frontier.current;
+      // A chunk is asked for a pickup when the *distance at which it will be met* has passed the next
+      // pickup's distance — not when it is laid, which is a spawn horizon earlier and would put the
+      // cadence out by however far ahead the field is built.
+      const reachedAt = state.distance + (PLAYER_Z - startZ);
+      const wantsPowerup = reachedAt >= nextPowerupAt.current;
+      const pattern = buildPattern(
+        environment,
+        difficulty,
+        startZ,
+        upcoming.current,
+        wantsPowerup,
+      );
+      if (wantsPowerup) nextPowerupAt.current = reachedAt + POWERUP_SPACING;
       obstacles.current.push(...pattern.obstacles.map((item) => ({ ...item, id: nextId.current++ })));
       coins.current.push(...pattern.coins.map((item) => ({ ...item, id: nextId.current++ })));
+      powerups.current.push(...pattern.powerups.map((item) => ({ ...item, id: nextId.current++ })));
       // The next shape is picked here rather than on the next pass, so the gap this chunk leaves can
       // be sized by the lead-in that one will need. Only a chunk that can ask for two lane changes
       // pays for it; everything else keeps the pacing gap.
@@ -1301,9 +1921,10 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
     /* ---- move, resolve, and cull ---- */
     let changed = spawned;
     const playerLane = lane;
+    laneRef.current = playerLane;
 
     for (const obstacle of obstacles.current) {
-      obstacle.z += delta * speed;
+      obstacle.z += step * speed;
       if (obstacle.passed || obstacle.z <= PLAYER_Z) continue;
 
       obstacle.passed = true;
@@ -1312,31 +1933,95 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
       const adjacent = Math.abs(obstacle.lane - playerLane) === 1;
 
       if (sameLane && !evaded) {
-        // Hit: stumble animation, camera shove, and a short recovery where the run slows.
-        state.damage += 1;
-        state.stumbles += 1;
-        state.combo = 0;
-        state.dangerLevel = Math.min(1, state.damage / 3);
+        // The stumble is the same either way — the runner is hit, visibly — but a shield spends
+        // itself instead of the run: no damage, no combo reset, and the pickup's whole job is done in
+        // this one branch.
         stumbleSlow.current = 1;
         impact.current = 1;
         setStumbling(true);
         scheduleReset(() => setStumbling(false), STUMBLE_MS);
         publishWorldMotion(environment, speed, lateral.current, 1, clock.elapsedTime, true);
-        onWorldEvent({ ...state, speed }, { type: "damage_taken", amount: 1 });
+
+        if (state.shield) {
+          state.shield = false;
+          onWorldEvent({ ...state, speed }, { type: "powerup_spent", powerup: "shield" });
+          continue;
+        }
+
+        state.damage += 1;
+        state.stumbles += 1;
+        state.combo = 0;
+        // A hit wipes the flow outright: the meter is the run's *form*, and a hit is the end of it.
+        state.flow = 0;
+        // The pressure is read against the terms, not the default: a run that took two hits is running
+        // hot, and the world should already be leaning on it.
+        state.dangerLevel = Math.min(1, state.damage / terms.hits);
+        onWorldEvent({ ...state, speed }, {
+          type: "damage_taken",
+          amount: 1,
+          left: Math.max(0, terms.hits - state.damage),
+        });
+
+        if (isRunOver(state, terms.hits) && !over.current) {
+          over.current = true;
+          setDefeated(true);
+          recordLine(distance, clock.elapsedTime, true);
+          onWorldEvent({ ...state, speed }, { type: "run_ended", score: state.score });
+          onRunEnd?.({ ...state, speed }, line.current);
+        }
         continue;
       }
 
       if (sameLane || adjacent) {
         state.nearMisses += 1;
         state.combo += 1;
+        /*
+         * A near miss in one side lane with another obstacle in the *other* side lane at the same
+         * moment is not luck, it is a gap threaded: the run has not merely been close to something,
+         * it has chosen the only line through two things at once. It is the one move in a lane-based
+         * runner that is a skill rather than a choice, and it is what the slow-motion is for.
+         */
+        const threaded =
+          adjacent &&
+          obstacles.current.some(
+            (other) =>
+              other !== obstacle &&
+              Math.abs(other.lane - playerLane) === 1 &&
+              other.lane !== obstacle.lane &&
+              Math.abs(other.z - obstacle.z) < GAP_METRES,
+          );
+        if (threaded) {
+          state.threads += 1;
+          state.flow = Math.min(1, state.flow + FLOW_THREAD * terms.flowScale);
+          if (distance >= slowmoReadyAt.current) {
+            slowmoReadyAt.current = distance + SLOWMO_COOLDOWN_METRES;
+            slowmo.current = SLOWMO_SECONDS;
+            punch.current = 1;
+          }
+          onWorldEvent({ ...state, speed }, { type: "perfect_gap", threads: state.threads });
+        } else {
+          state.flow = Math.min(1, state.flow + FLOW_NEAR * terms.flowScale);
+        }
         onWorldEvent({ ...state, speed }, { type: "near_miss", obstacle: obstacle.kind });
       }
     }
 
     for (const coin of coins.current) {
-      coin.z += delta * speed;
+      coin.z += step * speed;
       if (coin.collected) continue;
-      const inLane = coin.lane === playerLane;
+      // Nothing is paid after the run is over. The run coasts to a halt behind its own card, and the
+      // road it is coasting over still has coins on it — collected anyway, they would tick the HUD's
+      // token count past the number the card filed and the bank paid, which is a mismatch the player
+      // can see (measured: a run filed 8 tokens while the HUD went on to 9).
+      if (over.current) continue;
+      const laneX = LANES[coin.lane];
+      // The magnet pulls coins in beside the runner rather than collecting them at a distance: the
+      // coin still has to reach them, it just arrives in the lane they are standing in.
+      if (state.magnet > 0 && coin.z > PLAYER_Z - MAGNET_RANGE && coin.z < PLAYER_Z + 8) {
+        coin.x = THREE.MathUtils.damp(coin.x ?? 0, LANES[playerLane] - laneX, 5, step);
+      }
+      const offset = laneX + (coin.x ?? 0) - LANES[playerLane];
+      const inLane = Math.abs(offset) < 1.1;
       const atPlayer = coin.z > PLAYER_Z - 0.8 && coin.z < PLAYER_Z + 1.4;
       if (!inLane || !atPlayer) continue;
       // High coins are placed on jump arcs, so they have to be caught in the air.
@@ -1345,8 +2030,10 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
       state.coins += 1;
       state.combo += 1;
       // Tokens pay more the deeper the run goes, so the back half rewards reaching it (see
-      // `coinValueAt`). Density is flat on purpose; this is the reward half of the curve.
-      const tokenValue = coinValueAt(environment, distance);
+      // `coinValueAt`). Density is flat on purpose; this is the reward half of the curve. A doubled
+      // run doubles what it is paid, here and in the HUD, from the same number.
+      const tokenValue =
+        coinValueAt(environment, distance) * (state.doubleTokens > 0 ? 2 : 1) * terms.tokenScale;
       state.score += tokenValue;
       onToken?.(tokenValue);
       changed = true;
@@ -1358,14 +2045,64 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
       }
     }
 
+    for (const pickup of powerups.current) {
+      pickup.z += step * speed;
+      if (pickup.collected) continue;
+      // A pickup taken after the run ended would be a world event for a run that is not running.
+      if (over.current) continue;
+      // Taken at a run, in the lane it was placed in: a pickup never asks for a move of its own, so
+      // there is no jump-or-slide test here the way there is for a high coin.
+      if (pickup.lane !== playerLane) continue;
+      if (pickup.z <= PLAYER_Z - 0.9 || pickup.z >= PLAYER_Z + 1.6) continue;
+
+      pickup.collected = true;
+      if (pickup.kind === "shield") state.shield = true;
+      else if (pickup.kind === "magnet") state.magnet = MAGNET_SECONDS;
+      else state.doubleTokens = DOUBLE_SECONDS;
+      onWorldEvent({ ...state, speed }, { type: "powerup_collected", powerup: pickup.kind });
+      changed = true;
+    }
+
     const beforeObstacles = obstacles.current.length;
     const beforeCoins = coins.current.length;
+    const beforePowerups = powerups.current.length;
     obstacles.current = obstacles.current.filter((obstacle) => obstacle.z < CULL_Z);
     coins.current = coins.current.filter((coin) => coin.z < CULL_Z);
-    if (obstacles.current.length !== beforeObstacles || coins.current.length !== beforeCoins) {
+    powerups.current = powerups.current.filter((pickup) => pickup.z < CULL_Z);
+    if (
+      obstacles.current.length !== beforeObstacles ||
+      coins.current.length !== beforeCoins ||
+      powerups.current.length !== beforePowerups
+    ) {
       changed = true;
     }
     if (changed) setWorldVersion((version) => version + 1);
+
+    /* ---- the best line, out on the road ----------------------------------------------------------
+       The record holds where the best run *was* — its lane at each metre, and the distance it had
+       reached at each second — so the ghost is two different things at once, and they answer two
+       different questions. The road shows the *line*: a ring and a standing mark in the lane the best
+       run held at the metre the player is at now, which is a thing to aim at rather than a rival. The
+       HUD carries the *race*: how many metres ahead or behind this run is of the best run at the same
+       second, which is the only comparison of two runs that means anything. Neither is invented: both
+       read the same quads, so the mark on the road and the number in the HUD cannot disagree. */
+    const sample = ghostAt(ghost ?? undefined, distance);
+    const ahead = ghostAhead(ghost ?? undefined, distance, clock.elapsedTime);
+    ghostStatus.current = sample ? { lane: sample.lane, ahead: ahead ?? 0 } : null;
+    const marker = ghostMarker.current;
+    if (marker) {
+      const shown = Boolean(sample) && !over.current;
+      marker.visible = shown;
+      if (sample && shown) {
+        marker.position.x = THREE.MathUtils.damp(marker.position.x, LANES[sample.lane], 6, delta);
+      }
+    }
+    // Once per run, and once the run is properly under way: the first metres are a launch surge that
+    // would beat any line, and a best that is beaten by the dive is not a race the player won.
+    if (!ghostFired.current && !over.current && ahead !== undefined && ahead >= 1 && distance > 30) {
+      ghostFired.current = true;
+      onWorldEvent({ ...state, speed }, { type: "ghost_passed", ahead: Math.round(ahead) });
+    }
 
     /* ---- feed the HUD and the Orbis Director ---- */
     state.playerStyle =
@@ -1379,27 +2116,60 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
 
     if (clock.elapsedTime - lastProgress.current > 0.2) {
       lastProgress.current = clock.elapsedTime;
-      onProgress?.({ ...state });
+      onProgress?.({ ...state }, ghostStatus.current);
     }
 
-    if (Math.floor(distance / 50) > Math.floor(lastEventDistance.current / 50)) {
+    if (!over.current && Math.floor(distance / 50) > Math.floor(lastEventDistance.current / 50)) {
       lastEventDistance.current = distance;
       onWorldEvent({ ...state }, { type: "distance_milestone", distance });
     }
 
-    if (Math.floor(speed) > Math.floor(lastEventSpeed.current)) {
+    if (!over.current && Math.floor(speed) > Math.floor(lastEventSpeed.current)) {
       lastEventSpeed.current = speed;
       if (Math.floor(speed) % 2 === 0) onWorldEvent({ ...state }, { type: "speed_milestone", speed });
     }
   });
 
-  const animation: PlayerAnimation = stumbling ? "stumble" : jumping ? "jump" : sliding ? "slide" : "run";
+  // Defeat holds the stumble pose: the clip plays once and clamps, so this is the run's last frame
+  // standing rather than a runner jogging in place behind its own game-over card.
+  const animation: PlayerAnimation = defeated
+    ? "stumble"
+    : stumbling
+      ? "stumble"
+      : jumping
+        ? "jump"
+        : sliding
+          ? "slide"
+          : "run";
 
   return (
     <>
       <World environment={environment} speedRef={speedRef} />
       <Roadside environment={environment} speedRef={speedRef} />
       <Player lane={lane} characterId={characterId} animation={animation} speedRef={speedRef} />
+      {/*
+        The best line's mark: a ring on the road in the lane the best run held at this metre, moved
+        rather than re-rendered — it is one object, and a React state update per lane change would
+        render the whole content field for it. Additive and unlit on purpose: it is a memory of a
+        run, not another piece of the world's furniture.
+
+        The ring used to be joined by a soft standing column of light, and that column read as a
+        cone-shaped object travelling with the player — which is not what a lane marker should look
+        like. The mark is the flat ring that says where the best line was; the race itself is the
+        HUD's number.
+      */}
+      <group ref={ghostMarker} position={[LANES[1], 0, PLAYER_Z]} visible={false}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={2}>
+          <ringGeometry args={[0.62, 1.02, 28]} />
+          <meshBasicMaterial
+            color="#8ffbe0"
+            transparent
+            opacity={0.4}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+      </group>
       {/* The name carries the world version so a spawn or cull re-renders the list without
           remounting the pieces that are already in flight. */}
       <group name={`world-${worldVersion}`}>
@@ -1408,6 +2178,9 @@ function RunnerSimulation({ environment, characterId, paused, onWorldEvent, onPr
         ))}
         {coins.current.map((coin) => (
           <CoinPiece key={coin.id} coin={coin} environment={environment} />
+        ))}
+        {powerups.current.map((pickup) => (
+          <PowerupPiece key={pickup.id} pickup={pickup} />
         ))}
       </group>
     </>
@@ -1424,9 +2197,19 @@ export default function RunnerScene(props: RunnerSceneProps) {
       dpr={[1, 2]}
       gl={{ alpha: true, antialias: true }}
       camera={{ position: CAMERA_POSITION, fov: BASE_FOV }}
-      onCreated={({ camera }) => camera.lookAt(...CAMERA_TARGET)}
+      onCreated={({ camera, scene }) => {
+        camera.lookAt(...CAMERA_TARGET);
+        // The fog exists from the first frame, parked past anything the run can see, and the forest's
+        // hazard only pulls it in. Adding a fog when the fog arrives would recompile every material it
+        // touches — a hitch in the middle of the hazard that is supposed to be a change of visibility,
+        // not a stutter. The colour is this world's own ambient light, so the 3D layer fogs towards
+        // what the world's air is lit like rather than towards a grey of the game's own.
+        scene.fog = new THREE.Fog(new THREE.Color(environmentLook[props.environment].ambient), 700, 1200);
+      }}
     >
-      <RunnerSimulation {...props} />
+      {/* Keyed by attempt: the restart is a remount of the simulation, so a new run cannot inherit a
+          single thing from the last one — not a coin in flight, not a timer, not the damage taken. */}
+      <RunnerSimulation key={props.attempt ?? 0} {...props} />
     </Canvas>
   );
 }

@@ -37,6 +37,47 @@ const TRANSITION_SECONDS: Record<AnimationState, number> = {
 const LOOPING_STATES: AnimationState[] = ["run", "idle"];
 
 /**
+ * The runner's own size, measured once per file rather than from wherever it happens to be attached
+ * when it is measured.
+ *
+ * `Box3.setFromObject` measures in world space, which is fine the first time — the model comes out of
+ * the loader unattached — but a second mount measures the model while the *previous* mount's group is
+ * still attached (React renders the replacement before it removes the old subtree), so the reading
+ * includes the last normalisation and the new scale divides it back out. That is the retry that came
+ * back a different size than the first run: the same file, scaled by whatever the old group happened
+ * to be, then normalised against it.
+ *
+ * The bounds here are taken against the model's own root instead: every mesh's geometry box pushed
+ * through the file's internal node transforms, with no ancestor in the answer. Cached per file, so
+ * every mount of a runner is the same runner.
+ */
+const normalisedCache = new Map<string, { scale: number; y: number }>();
+
+function normalisedSize(model: THREE.Object3D): { scale: number; y: number } {
+  const cached = normalisedCache.get(model.uuid);
+  if (cached) return cached;
+
+  const bounds = new THREE.Box3();
+  const walk = (object: THREE.Object3D, parent: THREE.Matrix4): void => {
+    object.updateMatrix();
+    const local = new THREE.Matrix4().multiplyMatrices(parent, object.matrix);
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh && mesh.geometry) {
+      mesh.geometry.computeBoundingBox();
+      const box = mesh.geometry.boundingBox;
+      if (box) bounds.union(new THREE.Box3().copy(box).applyMatrix4(local));
+    }
+    for (const child of object.children) walk(child, local);
+  };
+  walk(model, new THREE.Matrix4());
+
+  const height = Math.max(bounds.max.y - bounds.min.y, 0.001);
+  const value = bounds.isEmpty() ? { scale: 1, y: 0 } : { scale: 2.35 / height, y: -bounds.min.y };
+  normalisedCache.set(model.uuid, value);
+  return value;
+}
+
+/**
  * One file per runner: the mesh, its rig and all five clips, exported from the FBX sources in
  * `models/characters/` by `tools/fbx-to-glb.html`. The clips are named for the states they drive, so
  * this map is the whole contract between the asset and the game.
@@ -61,11 +102,16 @@ export default function RunnerCharacter({ characterId, state, speedRef, facing =
       stumble: found.get("stumble"),
     } as Record<AnimationState, THREE.AnimationClip>;
   }, [gltf]);
-  const normalized = useMemo(() => {
-    const bounds = new THREE.Box3().setFromObject(model);
-    const height = Math.max(bounds.max.y - bounds.min.y, 0.001);
-    return { scale: 2.35 / height, y: -bounds.min.y };
-  }, [model]);
+  const normalized = useMemo(() => normalisedSize(model), [model]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const host = window as unknown as { __runnerSize?: () => unknown };
+    host.__runnerSize = () => ({ scale: normalized.scale, y: normalized.y });
+    return () => {
+      delete host.__runnerSize;
+    };
+  }, [normalized]);
 
   const active = useRef<THREE.AnimationAction | null>(null);
 
