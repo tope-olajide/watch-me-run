@@ -34,9 +34,8 @@ Both dev commands serve the token route, so pick either one:
 `REACTOR_API_KEY` is server-only — never give it a `VITE_` prefix and never commit it.
 
 Prefer `npm run dev` for local play. On some Windows setups the `netlify dev` function
-sandbox cannot make outbound connections, in which case its token route answers `500` with
-an `AggregateError` while the identical function code works on the host and on Netlify.
-The game stays playable in that case and says so in the world chip.
+sandbox cannot make outbound connections and its token route answers `500` even though the
+same function works in production; the game stays playable and says so in the world chip.
 
 ## The world is generated, live, and the run is what steers it
 
@@ -149,8 +148,7 @@ Each world climbs on its own schedule, reaching the `×3.0` ceiling where its ow
 in the desert, ~497 m in the city, ~745 m in the forest. Verified in the running game in all three
 worlds, not just the model — score is 12 pts/second plus token value, so differencing `score − 12 ×
 elapsed` against the token count gives what a token actually paid mid-run: **45.0 → 75.0 pts/token** in
-the city and **31.0 → 75.5** in the forest, both landing on the declared 75 (`tools/orbis-probe.mjs`,
-selected per world with `WORLD=`).
+the city and **31.0 → 75.5** in the forest, both landing on the declared 75.
 
 The curve is drawn as well as numbered, because `×2.4` says what a token is worth but not that it is
 climbing or how much run is left. Under the token count sits a ramp filling from the line to that
@@ -246,8 +244,7 @@ flash.
 frames have reached the screen** — and, the same idea one layer down, **the runner's model is in
 hand**. That last clause is not pedantry: `started` is the model's word for
 its loop being on, and the loader used to hand the run over on it alone — measured on a cold desert
-start, the loading screen left with `video: waiting` and the probe's first frame check read `null`,
-because the first frames landed after the player was already on screen. The runner's model is a couple
+start, the loading screen left before the first frame had painted. The runner's model is a couple
 of megabytes behind a lazy chunk, and the run renders it through a suspense boundary whose fallback
 used to be a capsule — the delivery shape the collision mathematics is built around — on screen for as
 long as the fetch took, in a game that has no capsule in it. The fallback is empty now, which removes
@@ -277,10 +274,9 @@ runner, two escape windows, because the launch surge covers those metres faster 
 The field used to start nine metres out, which at the launch's pace is under a second, and a `pair` or
 a wall landing there asks for a lane change the player has not been given the time to read: the first
 thing a fresh run — and a retry, which is the same remount — could teach was that it was unfair. One
-constant covers both starts, and `tools/run-audit.mjs` reads it rather than keeping its own copy, so
-the opening the harness measures is the opening that is played. Measured live with
-`window.__runfield()`: the first hazard row is 27–29 m ahead on the first sampled frame of a fresh run,
-and the same again after the defeat card's *Run again*, with three pips back on the HUD. The opening
+constant covers both starts. Measured live: the first hazard row is 27–29 m ahead on the first
+sampled frame of a fresh run, and the same again after the defeat card's *Run again*, with three pips
+back on the HUD. The opening
 band of the reward curve is quieter as a result — it is where a run is read, not where it is paid —
 while what a token is worth at the line is untouched.
 
@@ -317,13 +313,9 @@ run button, rather than shrinking a fixed-height grid until something falls off 
 The run screen is the game, not the machinery. On screen while running: the score, the tokens (with
 the run's ramp), the distance, the hits left, the combo, whatever powerup is running, and the world's
 weather while it is here — the numbers a decision can be made from — plus a callout when a pickup
-spends itself, and one Exit button in the header. Hidden, with `display:none` and still mounted: the deal's name and terms, the pressure bar,
-the ghost race, the flow meter, the token ramp, the world chip, and the world-answer feed. They stay in
-the DOM because the probes and the dev readouts are built on them (`.hud-contract`, `.hud-flow-fill`,
-`.hud-ghost b`, `.director-card`), so a probe can still read a run's internals that the player no
-longer has to look at. Verified on a real run headless: the only cells with a box were
-`SCORE` / `TOKENS` / `DISTANCE`, the header held the Exit button alone, and none of the eight hidden
-blocks had a client rect.
+spends itself, and the Exit and Pause buttons in the header. Hidden, with `display:none` and still mounted: the deal's name and terms, the pressure bar,
+the ghost race, the flow meter, the token ramp, the world chip, and the world-answer feed — kept in
+the DOM for the game's own diagnostics, which read the internals a player no longer has to look at.
 
 **A pause holds the whole page, not just the simulation.** `RunnerScene` stops the scene clock and
 remembers where it stopped (`clock.stop()` plus the held `elapsedTime`, restored on resume), zeroes
@@ -341,7 +333,7 @@ tall flat rectangle standing in the sand reads as a bug in the world rather than
 city's is a lit barrier: a dark plinth and panel between two neon edge strips and a bar across the top,
 which keeps the silhouette the avenue already reads as a wall and gives the player something lit to
 see it by. The city's jumpable obstacle got the same treatment, one lit bar on its face. Read out of
-real frames headless as pixel shares: the desert run is **94% warm, 0% cyan**, the city run **27%
+real captured frames as pixel shares: the desert run is **94% warm, 0% cyan**, the city run **27%
 cyan, 1% warm**.
 
 ## Three worlds, three tempos
@@ -363,10 +355,10 @@ simulator that measures fairness reads the same numbers the game runs on. `--run
 camera's field of view are normalised against each world's own range, so "flat out" means the same
 thing in a slow world as a fast one instead of quietly telling city players they are crawling.
 
-Measured with `node tools/run-audit.mjs 60 1500`: the city is the densest per 100 m (3.9 decision rows,
+Measured over 60 runs of 1500 m per world: the city is the densest per 100 m (3.9 decision rows,
 14.5 coins) and still the most forgiving moment to moment (its tightest row gives you 1.07 s), while
 the desert has the fewest rows (3.6) and the tightest read (0.87 s) because it arrives fastest. No row
-in any world arrives closer than 0.87 s — a lane change costs 0.5 s even by the harness's optimistic
+in any world arrives closer than 0.87 s — a lane change costs 0.5 s even by the most generous
 model — and all three show zero unavoidable rows, zero windows under 0.35 s and zero coins that bait
 you into a wall. Verified in-game in every world, not just the desert: a 40 s pass in each reaches the
 desert's 17.0 m/s and the city's 14.0 (the forest is still climbing at 14.2, because its ramp is
@@ -404,9 +396,8 @@ measured and scaled to a 2.35 m runner with its feet at zero. The measurement is
 model's children multiplying local matrices, cached by `model.uuid` (`normalisedSize`), rather than
 `Box3.setFromObject`: that reads *world* space, and on a remount — which is what "Run again" is — the
 previous attempt's group is still attached when the new one measures, so the runner was being
-normalised against an already-scaled copy of itself and came back visibly enormous. Measured with
-the dev readout `window.__runnerSize()`: the same scale `0.01595` and the same foot height before and
-after a retry, drift `0` on both.
+normalised against an already-scaled copy of itself and came back visibly enormous. Measured: the
+same scale `0.01595` and the same foot height before and after a retry, drift `0` on both.
 
 **Two rigs, one model.** A run is shot from behind — the camera sits above and behind the player, and
 the runner faces away down the road — so `RunnerCharacter` turns the model 180° by default. The menu
@@ -419,10 +410,9 @@ The preview camera is also why the menu once showed a headless dancer. R3F calls
 origin is its feet: the frame was centred on the ground under the character, so the body filled the
 upper half of it and the head sat above the top edge. The camera now sits at chest height with an
 explicit `rotation` — which is also what tells R3F to leave the aim alone — and a 32° lens 5 m back
-holds the 2.35 m model with room above the head for a raised arm. Measured with
-`frame-report --activity` on two clipped captures of the stage 0.4 s apart: the runner's movement now
-spans 10%→90% of the stage frame, where the old rig put all of it in the top half with the bottom 40%
-empty.
+holds the 2.35 m model with room above the head for a raised arm. Measured on two captures of the
+stage 0.4 s apart: the runner's movement now spans 10%→90% of the stage frame, where the old rig put
+all of it in the top half with the bottom 40% empty.
 
 **The FBX sources stay in `models/`** as the source of truth but are kept out of git — 122 MB of FBX
 against 6.9 MB of GLB, so only the GLBs are committed (`.gitignore` carries the `models/**/*.fbx`
@@ -433,9 +423,9 @@ gloss rather than approximating it: shininess 20 becomes roughness 0.30, and the
 map ride through as `KHR_materials_specular` instead of being inverted into a roughness map. That is
 122 MB of source down to 6.9 MB of runtime assets, and `dist/` down to 9.0 MB — 12 MB with the
 roadside's cooked props aboard too. Re-run the tool after
-changing anything in `models/` — a fresh clone cannot, since it has the GLBs and not the sources. And
-to look at the two side by side rather than take that on trust, `tools/fidelity-check.html` renders
-the FBX and the GLB in the game's own light and measures the difference: mean 0.8–1.4 of 255, at most
+changing anything in `models/` — a fresh clone cannot, since it has the GLBs and not the sources.
+`tools/fidelity-check.html` renders the FBX and the GLB side by side in the game's own light and
+measures the difference: mean 0.8–1.4 of 255, at most
 3.4% of pixels differing by more than 8, and neighbour-pixel detail within a few percent either way —
 the residue being the texture downscale, not the material.
 
@@ -541,28 +531,23 @@ generated soundtrack belongs to the world and is left alone, which is what the p
 out loud. The track keeps playing while the game is paused: it is the game's, not the world's, so a
 pause does not have to sound like the end of the run.
 
-Verified on the headless probe under Chrome's real autoplay policy (no `--autoplay-policy` flag, and
-every control driven by trusted input rather than `element.click()`, which is not a gesture): no music
-element exists before the first interaction; one real click starts it and its level **climbs** —
-measured at 0.171 then 0.270 as the ramp ran, against a target of 0.270 (`0.6 × 0.45`), rather than
-appearing at the target — and it loads `bgm.mp3` and reports its duration as 116.16 s, which is the
-encode and not the source; mute catches it mid-ramp and takes it the same way down (0.219 → 0.114 → 0
-over about 320 ms), and an unmute returns it (0.047 → 0.152 → 0.270); a mute 260 ms into a *fresh*
-fade-in, when the level had reached 0.028, fades out from exactly there rather than jumping; both mute
-and volume persist, the slider to 25% leaves the element at 0.1125 and survives a reload with the panel
-showing 25%; in a run with four tokens collected the pickup pool is live and the track is still
-playing; and the pause overlay carries the same panel at the same value. The audio is now 1.5 MB in
-total, where the source track alone was 3.7 MB.
+Verified headlessly under Chrome's real autoplay policy, with every control driven by a real gesture:
+no music element exists before the first interaction; one real click starts it and its level
+**climbs** — measured at 0.171 then 0.270 as the ramp ran, against a target of 0.270 (`0.6 × 0.45`),
+rather than appearing at the target — and it loads `bgm.mp3` and reports its duration as 116.16 s,
+which is the encode and not the source; mute catches it mid-ramp and takes it the same way down
+(0.219 → 0.114 → 0 over about 320 ms), and an unmute returns it (0.047 → 0.152 → 0.270); a mute
+260 ms into a *fresh* fade-in fades out from exactly there rather than jumping; both mute and volume
+persist, the slider surviving a reload at the value it was set to; and the pause overlay carries the
+same panel at the same value. The audio is now 1.5 MB in total, where the source track alone was
+3.7 MB.
 
-**One bug the fades hid, and what found it.** The ramp clamps its progress now, and the reason is worth
-writing down: an animation frame's timestamp is the frame's *own* start time, which can precede the
-`performance.now()` that scheduled the fade, so the first callback can compute a progress a hair below
-zero. On the way down that is invisible — the value stays inside the ramp — but on the way *up from
-silence*, which is unmute and only unmute, it asks for a negative `volume`, and
-`HTMLMediaElement.volume` refuses it with an `IndexSizeError` in the console. It was caught by
-`tools/flow-probe.mjs`, a probe about the score ceiling, because that probe treats any console exception
-as a fault. Verified after the fix by driving the real toggle: mute 0.216 → 0.159 → 0.092 → 0.024 →
-0.000, then unmute from exactly silence 0.000 → 0.076 → 0.140 → 0.245 → 0.270 with no exception.
+**One bug the fades hid.** The ramp clamps its progress now: an animation frame's timestamp is the
+frame's *own* start time, which can precede the `performance.now()` that scheduled the fade, so the
+first callback can compute a progress a hair below zero — invisible on the way down, but on the way
+*up from silence* it asks for a negative `volume`, which `HTMLMediaElement.volume` refuses with an
+`IndexSizeError`. Verified by driving the real toggle from silence: the level climbs 0.000 → 0.076 →
+0.140 → 0.245 → 0.270 with no exception.
 
 ## Stakes, and what the world is answering
 
@@ -609,8 +594,8 @@ interface because the director is what decides whether an ask is *spent*: an eve
 replaced by a newer one never reached the world, and reporting it as a cause would be a lie about what
 the player is looking at. The menu's opening shot and the run's launch carry no cause, for the same
 reason — they are not answers to anything the player did. Measured live: the feed is empty at the line,
-holds one entry after nine seconds (one ask spent — one prompt per boundary, on a 1.8 s cooldown), and
-empties again the moment a new run starts.
+holds one entry after nine seconds (one ask spent), and empties again the moment a new run
+starts.
 
 ## Three things worth picking up
 
@@ -671,12 +656,13 @@ is invisible until it saves you.
 out) and forest (glowing plants brighten, then go dark as the fog closes), and `audioEvents` gained a
 bright chime and a glassy shatter. All of them obey the same two rules as every other fragment — no
 figure in the frame, no camera move — and `npm run check:prompts` now builds and scans them with the
-rest (204 picture prompts, 54 captions).
+rest (300 picture prompts, 78 captions).
 
-**One bug worth recording, because it was invisible from the game.** The director keeps exactly one
-pending event, and a routine event is allowed to overwrite a routine one — correct for near-miss
-chatter, fatal for a pickup, which fires once and then says nothing for a while. Measured before the
-fix: **one pickup answer in 99 feed entries**, across a session that collected dozens of pickups. The
+**One bug worth recording, because it was invisible from the game.** The director used to hold a
+single pending event, and a routine event was allowed to overwrite a routine one — correct for
+near-miss chatter, fatal for a pickup, which fires once and then says nothing for a while.
+Measured before the fix: **one pickup answer in 99 feed entries**, across a session that collected
+dozens of pickups. The
 fix is `isPlayEvent` in `src/game/run-state.ts` (pickups, a pickup spent, a hit, a tier crossing) and a
 default in the director's `trigger`, so a player-caused moment claims the slot and the world's own
 weather cannot displace it. Measured after: **19 pickup answers in 105 entries**.
@@ -900,8 +886,8 @@ for a line to be drawn on their road should not have to work out how to ignore i
 there is no best run for it to point at anyway. With it on, the mark is the ring *and* the stand of
 light over it — the column is what makes it findable in a crowded frame at speed, which is exactly what
 someone who switches it on is asking for — and with it off, neither is drawn: the mesh stays mounted
-(so the development readout can report the object the switch controls) and its `visible` is set per
-frame from the preference, which is also why the pause overlay's switch is felt the frame it is pressed.
+and its `visible` is set per frame from the preference, which is also why the pause overlay's switch
+is felt the frame it is pressed.
 The HUD carries the comparison that
 actually means something between two runs: **metres ahead or behind the best run at the same second**,
 read by interpolating the line's times. Green is ahead, a dim red is behind. The moment a run is a whole
@@ -1089,9 +1075,9 @@ slowly behind the game, which does not need frames at full rate to stay alive. T
 measuring it: a run never opens on a rest (the rest is cleared when a run starts, or the launch prompt
 waits out the pause), and a pause/resume command that never settles is bounded at 10 s and retried —
 without that ceiling one lost reply wedges the reconciler's in-flight guard and *every* later pause
-silently does nothing while chunks keep being paid for, which is exactly what a probe run caught.
+silently does nothing while chunks keep being paid for.
 
-One thing to know if you change the director: Orbis reads the prompt that is in force when a chunk
+One rule governs the ask queue: Orbis reads the prompt that is in force when a chunk
 *starts*, so a second prompt inside the same chunk is thrown away unread. The director subscribes to
 `chunk_complete` and spends at most one ask per boundary, holding the rest for the next one. The single
 exception is deliberate: a priority ask that has waited `PRIORITY_WAIT_MS` (3.2 s) takes the current
@@ -1165,7 +1151,7 @@ therefore moving slower than the runner. Three things carry that:
    never come close to the camera, no clouds cross the foreground, and the ground between the horizon
    and the bottom of frame stays flat and empty. The generated world also has **no path** of its own
    any more: the game draws the only path, and a road in the video was a second one ending nowhere.
-   `npm run check:prompts` asserts the distance clause on all 156 picture prompts, like the horizon
+   `npm run check:prompts` asserts the distance clause on all 300 picture prompts, like the horizon
    clause and the emptiness clause.
 2. **A distance haze dissolves the near field.** `.world-video::after` in `src/styles.css` ramps
    atmosphere over the video below the meeting band (the game horizon is at ~44% and the ribbon fades
@@ -1618,9 +1604,10 @@ screen and no overlap.
 The generated world has to stay a landscape and keep its sky above the game's ground, so the prompts
 are checked like content. This builds every prompt the app can send on both channels — each world ×
 (its own scenery or a player's landscape) × opening/launch/every event × every player style, plus every
-audio caption — and fails if a picture prompt names a subject or drops either the emptiness clause or
-the horizon hold, or if a caption names a subject, forgets to rule out voices, or runs past the length
-the model actually reads. Currently **156 picture prompts and 42 captions, all clean**:
+audio caption — and fails if a picture prompt names a subject or drops the emptiness clause, the
+distance clause or the horizon hold, or if a caption names a subject, forgets to rule out voices, or
+runs past the length the model actually reads. Currently **300 picture prompts and 78 captions, all
+clean**:
 
 ```bash
 npm run check:prompts
