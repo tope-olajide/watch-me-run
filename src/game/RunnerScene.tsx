@@ -26,17 +26,7 @@ import {
 import { roadGrade } from "./road-grade";
 import { ghostAhead, ghostAt, LINE_METRES, type RunSummary } from "./records";
 import { markerEnabled } from "./marker";
-import {
-  gustLead,
-  hazardAt,
-  hazardFog,
-  hazardLight,
-  publishGust,
-  publishHazard,
-  readHazard,
-  shovesFor,
-  windFor,
-} from "./hazards";
+import { hazardAt, hazardFog, hazardLight, publishHazard, readHazard } from "./hazards";
 import { environmentLook } from "./world-look";
 import { apronField, apronHeight, sampleApron, type ApronField, type ApronSample } from "./apron";
 import {
@@ -1470,66 +1460,6 @@ function Player({
 
 /* ---------------------------------------------------------------------------- simulation */
 
-/**
- * How far ahead of the runner a gust has to find clear road before the storm may take a lane.
- *
- * The desert's shove is meant to move the run with no key behind it: the storm takes a lane and the run
- * has to take it back. What it must not be is a coin flip — a gust that lands the runner in a lane an
- * obstacle is already standing in is a hit the player had no way to answer, and it reads as the game
- * pushing them into the obstacle rather than as weather. So the storm still picks a direction first,
- * and this decides whether the road will take it: if the lane it wants is occupied ahead, the gust goes
- * the other way, and if both lanes are occupied it waits for the road to open. 22 m is over a second at
- * every world's top speed and well over two at its opening pace: long enough to be a decision, short
- * enough that the storm still reads as the road being taken from the player rather than as the storm
- * waiting for a quiet moment.
- */
-const SHOVE_CLEAR_METRES = 22;
-
-/** Is this lane clear for the next `SHOVE_CLEAR_METRES`, so a gust may take it? */
-function laneClearFor(obstacles: Obstacle[], lane: number): boolean {
-  return !obstacles.some(
-    (obstacle) =>
-      !obstacle.passed &&
-      obstacle.lane === lane &&
-      obstacle.z < PLAYER_Z &&
-      obstacle.z > PLAYER_Z - SHOVE_CLEAR_METRES,
-  );
-}
-
-type GustPlan = {
-  /** Which way the wind is blowing: the lane it will take, or the kerb it spends itself against. */
-  dir: -1 | 1;
-  /** Whether the gust ends in a lane change. A push into the edge of the road moves nobody. */
-  move: boolean;
-  /**
-   * The wind wants a lane and neither side is clear ahead: the gust is owed, and its wind-up holds at
-   * full until the road opens. What the HUD shows meanwhile is the lane it will take when it does.
-   */
-  waiting: boolean;
-};
-
-/**
- * What this gust will actually do, read from the lane the runner is in now.
- *
- * The decision lives in one function because two readers have to agree: the frame that lands the gust,
- * and the wind-up that has been showing it for the last `WIND_LEAD_METRES`. If they could disagree,
- * the telegraph would be a promise the shove then breaks — which is the whole thing the wind-up exists
- * to stop being true.
- */
-function gustFor(obstacles: Obstacle[], from: number, index: number, shove: number): GustPlan {
-  const wind = windFor(index, shove);
-  const wanted = THREE.MathUtils.clamp(from + wind, 0, LANE_COUNT - 1);
-  if (wanted === from) return { dir: wind, move: false, waiting: false };
-  if (laneClearFor(obstacles, wanted)) return { dir: wind, move: true, waiting: false };
-  const away = THREE.MathUtils.clamp(from - wind, 0, LANE_COUNT - 1);
-  // Named rather than written as `-wind`, because TS widens a negated `-1 | 1` to `number`.
-  const windAway: -1 | 1 = wind === 1 ? -1 : 1;
-  if (away !== from && laneClearFor(obstacles, windAway)) {
-    return { dir: windAway, move: true, waiting: false };
-  }
-  return { dir: wind, move: false, waiting: true };
-}
-
 /** What a run is played under when nobody said otherwise: the standard deal, in one place. */
 /**
  * The most line a run may carry, in numbers: 1,000 samples, which is 20 km.
@@ -1634,7 +1564,7 @@ function RunnerSimulation({
   const stumbleSlow = useRef(0);
   /** The lane the simulation is actually reading, for the development readout. */
   const laneRef = useRef(1);
-  /** Which hazard has already been announced, and how many of its shoves have landed. */
+  /** Which hazard has already been announced. */
   const announcedHazard = useRef(-1);
   /** How many hazards this run has actually announced, for the development readout. */
   const hazardFired = useRef(0);
@@ -1642,14 +1572,6 @@ function RunnerSimulation({
   // after a run takes the world, and this file's clock runs on frame deltas, which in a slow frame
   // can outrun the wall clock the director reads. `RunExperience` asks for it instead, on the
   // interface's own clock — see the effect there.
-  const shoves = useRef(0);
-  /** A gust's leftover push, decaying: what the world layer feels of the storm. */
-  const gust = useRef(0);
-  const gustDir = useRef<-1 | 1>(-1);
-  /** How far through the next gust's wind-up the storm is: 0 quiet, 1 about to land. */
-  const windup = useRef(0);
-  /** Where that wind-up is pointed, for the streaks, the HUD line and the development readout. */
-  const windupDir = useRef<-1 | 1>(-1);
   /** The threading moment: its clock, the camera's pull-in, and the time scale the run runs at. */
   const slowmo = useRef(0);
   const punch = useRef(0);
@@ -1721,12 +1643,9 @@ function RunnerSimulation({
         .filter((coin) => !coin.collected && coin.z > PLAYER_Z - 70)
         .map((coin) => ({ lane: coin.lane, x: Math.round((coin.x ?? 0) * 100) / 100, z: round(coin.z) })),
       // The weather and the lane, with the field: what the world is doing to the run, and where the
-      // run actually is — the two things a shove moves without a key being pressed.
+      // run actually is. A lane that changes with no key behind it is a bug, and this is where it is
+      // read: `lane` against the input the probe replayed.
       hazard: { ...state().hazard },
-      // The wind-up of the next gust, if one is up: how far through it the storm is and which lane it
-      // is pointed at. A shove can be checked against this — a gust that landed with no lead before it
-      // is a lane that changed itself, which is exactly what the wind-up exists to prevent.
-      gust: { lead: Math.round(windup.current * 100) / 100, dir: windup.current > 0 ? windupDir.current : 0 },
       hazardFired: hazardFired.current,
       lane: laneRef.current,
       // The skill ceiling, as the simulation is actually running it: the flow value, the gaps it has
@@ -1772,9 +1691,6 @@ function RunnerSimulation({
     timers.current.forEach((id) => window.clearTimeout(id));
     timers.current = [];
     publishWorldMotion(environment, environmentPace[environment].baseSpeed, 0, 0, 0, true);
-    // The wind-up is the one weather value that could be left mid-ramp: an exit during a gust would
-    // otherwise leave the streaks frozen over the menu at whatever lead the run had reached.
-    publishGust(0, windupDir.current);
   }, []);
 
   useEffect(() => {
@@ -1904,51 +1820,10 @@ function RunnerSimulation({
     // being *here*. It is a play event, so it cannot be displaced by the milestone chatter.
     if (!over.current && hazard.phase === "active" && hazard.index !== announcedHazard.current) {
       announcedHazard.current = hazard.index;
-      shoves.current = 0;
       hazardFired.current += 1;
       onWorldEvent({ ...state, speed }, { type: "hazard_started", hazard: hazard.name });
     }
 
-    // The desert's shove: one whole lane, and the run has to take it back. `shovesFor` counts how
-    // many gusts the storm owes by now, so the rhythm is a function of the distance rather than of
-    // the frame rate — and a frame that lands two is two lanes, in the right directions.
-    //
-    // Every gust is checked against the road before it lands (`gustFor`): the storm may take a lane,
-    // but it may not take the lane an obstacle is standing in, because that is not a hazard the player
-    // can answer — it is the game moving them into the thing that kills them.
-    if (!over.current && hazard.kind === "shove" && hazard.phase === "active") {
-      const due = shovesFor(hazard.since);
-      // The lane the winds are read against, carried through the loop: two gusts in one frame is two
-      // lanes, and React's state has not re-rendered between them.
-      let from = laneRef.current;
-      while (shoves.current < due) {
-        const plan = gustFor(obstacles.current, from, hazard.index, shoves.current);
-        // Both lanes ahead are occupied: the gust holds until the road opens rather than landing the
-        // runner in one of them. It is still owed, so the storm lands it the moment it can — and its
-        // wind-up below holds at full while it waits.
-        if (plan.waiting) break;
-        shoves.current += 1;
-        // The storm is pushing into the edge of the road: there is no lane to take, and a gust spent
-        // on the kerb should not be saved up to land later.
-        if (!plan.move) continue;
-        gust.current = 1;
-        gustDir.current = plan.dir;
-        from = THREE.MathUtils.clamp(from + plan.dir, 0, LANE_COUNT - 1);
-        setLane(from);
-      }
-      // The gust's wind-up, computed from the same decision that lands it: how far off it is (`--gust`
-      // ramps the streaks and the HUD line) and which lane it is pointed at (`data-gust-dir`). Read
-      // against the lane the runner is in *now*, so a player who moves during the wind-up sees the
-      // direction change with them rather than being promised a lane the gust no longer takes.
-      windup.current = gustLead(hazard.since, shoves.current);
-      if (windup.current > 0) {
-        windupDir.current = gustFor(obstacles.current, laneRef.current, hazard.index, shoves.current).dir;
-      }
-    } else {
-      windup.current = 0;
-    }
-    publishGust(windup.current, windupDir.current);
-    gust.current = Math.max(0, gust.current - delta * 1.6);
 
     // The forest's fog is the only hazard the WebGL layer cannot borrow from the DOM: the video is
     // behind this canvas, so a screen-space scrim cannot take the distance out of the road and the
@@ -1993,10 +1868,9 @@ function RunnerSimulation({
     publishWorldMotion(
       environment,
       speed * timeScale.current,
-      // The gust is folded into the lateral travel the world layer already parallaxes by, so the
-      // whole picture leans with the storm while the runner's own ground (the road, the content
-      // field) keeps moving straight: the world is being pushed, not the camera.
-      lateral.current + gust.current * gustDir.current * 0.18,
+      // The runner's own lateral travel exactly as the camera reads it: the world layer and the rig
+      // have to leave the old lane on the same curve, or the picture shears off the road.
+      lateral.current,
       impact.current,
       clock.elapsedTime,
       false,

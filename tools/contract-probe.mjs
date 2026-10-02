@@ -400,7 +400,7 @@ try {
         await sleep(200);
         continue;
       }
-      // A shove moves the lane without a key, so the autopilot has to re-read where it actually is.
+      // The autopilot re-reads the lane every sample: the runner is the authority on where it is.
       state.lane = sample.lane;
       samples.push(sample);
       if (sample.distance >= deal.metres || sample.over) {

@@ -5,20 +5,19 @@
 //   OUT=/tmp node tools/hazard-probe.mjs
 //
 // A run per attempt, played with an autopilot that dodges what is in its lane and otherwise holds the
-// middle — because the desert's hazard moves the *runner*, and a probe that steers cannot tell a shove
-// from its own correction. Every lane change is timed against the last key the probe pressed: a change
-// with no press behind it is the storm's.
+// middle. Every lane change is timed against the last key the probe pressed: a lane change with no key
+// behind it is the game moving the runner, which is the fault this probe exists to catch — the desert's
+// storm once did that, and the shove was removed after it was reported as a bug twice.
 //
 // A run that ends is restarted through the card and the evidence is gathered per attempt, because a
-// hazard can legitimately end a run — the storm shoves it into something, the fog arrives with a
-// gate behind it — and an answer the world never got to send is not evidence of broken weather.
+// hazard can legitimately end a run — the fog arrives with a gate behind it — and an answer the world
+// never got to send is not evidence of broken weather.
 //
 // What is recorded:
 //   - `window.__runfield()` sampled every 150 ms: the phase, its intensity, how many hazards the run
-//     announced, and the lane, which is where a shove shows up;
-//   - the HUD's `.hud-hazard` badge and the `:root` attributes the weather publishes — including the
-//     `--gust` wind-up and `data-gust-dir` a desert storm raises before each shove — so "the player
-//     was told" is a reading rather than an intention, and a lane that changed itself is a fault;
+//     announced, and the lane, which is where an uncommanded move would show up;
+//   - the HUD's `.hud-hazard` badge and the `--weather` intensity the simulation publishes — so "the
+//     player was told" is a reading rather than an intention, and a lane that changed itself is a fault;
 //   - the director feed, sampled from the DOM as well as watched for insertions, because the feed is
 //     three deep and an entry can be born and evicted inside one commit;
 //   - frames, as a bracket: two clear ones 1.2 s apart (the world's own drift), one at the peak of the
@@ -269,7 +268,9 @@ try {
         attempt: attempts,
         phases: [],
         badges: [],
-        shoves: [],
+        // Every lane change the run makes. `mine` flags the probe's own presses; a lane that changed with
+        // no key behind it is the fault.
+        moves: [],
         frames: {},
         fired: 0,
         ended: false,
@@ -280,9 +281,6 @@ try {
       let myLane = 1;
       let previousPhase = null;
       let clearPair = 0;
-      // The last wind-up the storm was showing, kept with its own clock: a shove has to find one of
-      // these within the couple of seconds before it lands, or it is a lane that changed itself.
-      let shown = { lead: 0, dir: "", at: 0 };
       const deadline = Date.now() + RUN_MS;
 
       while (Date.now() < deadline) {
@@ -295,29 +293,25 @@ try {
           kind: document.documentElement.dataset.hazard ?? "",
           phase: document.documentElement.dataset.hazardPhase ?? "",
           weather: Number(document.documentElement.style.getPropertyValue("--weather") || 0),
-          gust: Number(document.documentElement.style.getPropertyValue("--gust") || 0),
-          gustDir: document.documentElement.dataset.gustDir ?? "",
           badge: document.querySelector(".hud-hazard")?.textContent?.trim().replace(/\\s+/g, " ") ?? null,
           over: Boolean(document.querySelector(".run-over-card")),
         }))()`);
-        if (css.gust >= 0.5) shown = { lead: css.gust, dir: css.gustDir, at: Date.now() };
-
         run.fired = field.hazardFired;
 
         const from = lane;
         lane = field.lane;
-        if (from !== null && lane !== from && field.hazard.phase === "active") {
+        if (from !== null && lane !== from) {
+          // 400 ms of grace: the lane change the probe asked for is read back a frame or two later,
+          // and a key press that lands just after the sample is still the probe's.
           const mine = Date.now() - lastPress < 400;
-          const way = lane > from ? "right" : "left";
-          const warned = !mine && shown.lead >= 0.5 && Date.now() - shown.at < 2000;
-          run.shoves.push({
+          run.moves.push({
             distance: field.distance,
             from,
             to: lane,
             mine,
+            phase: field.hazard.phase,
+            kind: field.hazard.kind,
             intensity: field.hazard.intensity,
-            warned,
-            telegraphed: warned && shown.dir === way,
           });
         }
 
@@ -390,13 +384,12 @@ try {
       );
       console.log(`  feed: ${run.feedLines.join(" | ") || "(none)"}`);
       console.log(
-        `  shoves: ${run.shoves.map((shove) => `${shove.distance}m ${shove.from}→${shove.to}${shove.mine ? " (probe)" : shove.telegraphed ? " (storm, wind-up)" : shove.warned ? " (storm, wind-up, direction differs)" : " (storm, NO WIND-UP)"}`).join(", ") || "(none)"}`,
+        `  lane changes: ${run.moves.map((move) => `${move.distance}m ${move.from}→${move.to}${move.mine ? " (probe)" : " (NO KEY)"}`).join(", ") || "(none)"}`,
       );
 
-      const stormShoves = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => !shove.mine).length, 0);
       const answered = evidence.some((entry) => entry.answered);
       const bracketed = evidence.some((entry) => entry.frames.clear && entry.frames.peak);
-      complete = answered && bracketed && (world !== "desert" || stormShoves >= 2);
+      complete = answered && bracketed;
       if (complete) break;
 
       // Another run: the card is the fast path, and the menu is the slow one.
@@ -425,9 +418,12 @@ try {
 
     const answered = evidence.some((entry) => entry.answered);
     const bracketed = evidence.find((entry) => entry.frames.clear && entry.frames.peak);
-    const stormShoves = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => !shove.mine).length, 0);
-    const warned = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => !shove.mine && shove.warned).length, 0);
-    const telegraphed = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => shove.telegraphed).length, 0);
+    // The whole point: a lane change with no key behind it. Zero is the pass.
+    const stolen = evidence.reduce((total, entry) => total + entry.moves.filter((move) => !move.mine).length, 0);
+    const stolenDuringStorm = evidence.reduce(
+      (total, entry) => total + entry.moves.filter((move) => !move.mine && move.kind === "storm").length,
+      0,
+    );
     const kindsSeen = [...new Set(evidence.flatMap((entry) => entry.phases.map((phase) => phase.kind)).filter(Boolean))];
     const warnings = evidence.filter((entry) => entry.phases.some((phase) => phase.phase === "warning")).length;
     const badges = [...new Set(evidence.flatMap((entry) => entry.badges.map((badge) => badge.badge)))];
@@ -436,7 +432,7 @@ try {
     console.log(`  weather seen: ${kindsSeen.join(", ") || "(none)"} | runs with a warning: ${warnings}/${evidence.length}`);
     console.log(`  badges seen: ${badges.join(" | ") || "(none)"}`);
     console.log(`  the world answered: ${answered ? "yes" : "no"}`);
-    console.log(`  shoves with no key pressed: ${stormShoves} | wind-up shown first: ${warned}/${stormShoves} | direction matched: ${telegraphed}/${warned}`);
+    console.log(`  lane changes with no key pressed: ${stolen} (during a storm: ${stolenDuringStorm}) | the pass is zero`);
     console.log(`  fired per run: ${evidence.map((entry) => entry.fired).join(", ")}`);
     if (bracketed) {
       console.log(`  bracket (run ${bracketed.attempt}):`);
@@ -452,10 +448,7 @@ try {
     if (!answered) faults.push(`${world}: the world never answered the hazard in the feed`);
     if (!badges.some((badge) => /incoming/i.test(badge))) faults.push(`${world}: the HUD never warned about the hazard`);
     if (!bracketed) faults.push(`${world}: no clear/peak frame pair was captured`);
-    if (world === "desert" && stormShoves < 2) faults.push(`desert: the storm moved the runner ${stormShoves} times`);
-    if (world === "desert" && stormShoves > warned) {
-      faults.push(`desert: ${stormShoves - warned} gust(s) landed with no wind-up before them`);
-    }
+    if (stolen > 0) faults.push(`${world}: ${stolen} lane change(s) with no key behind them — the game moved the runner`);
 
     if (WORLDS.length > 1) {
       await clickAt(".quiet-button");

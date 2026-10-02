@@ -472,8 +472,9 @@ export default function MenuExperience({ onStart, entering = false, returning = 
               <section>
                 <h3>Weather</h3>
                 <p>
-                  Every world brings its own: the desert sends a sandstorm that shoves you a lane, the
-                  city blacks out, the forest closes in with fog.
+                  Every world brings its own: the desert sends a sandstorm over the picture, the city
+                  blacks out, the forest closes in with fog. None of them touch your lane — the
+                  running is always yours.
                 </p>
               </section>
               <section>

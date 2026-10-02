@@ -70,9 +70,9 @@ news that may be dropped. The measured effect on that queue is in *The world's o
 schedule (`src/game/hazards.ts`), and it is the clearest case of the loop: the run announces it, Orbis
 is asked to make it real in the picture — *a wall of sand sweeps across the horizon*, *every light in
 the city fails at once from the horizon towards the camera*, *thick fog rolls across the ground and
-swallows everything past the nearest trees* — and the same hazard changes the rules of the run in the
-same seconds: the storm shoves the runner a whole lane, the blackout takes the light, the fog takes the
-planning distance. The player is watching the thing that is happening to them.
+swallows everything past the nearest trees* — and the run is living it in the same seconds: the storm
+blots the sky and hazes the far road, the blackout takes the light, the fog takes the planning
+distance. The player is watching the thing that is happening to them.
 
 **Your own picture becomes the world.** The landscape is optional and it is the player's: a photo, a
 drawing, a screenshot — anything — is measured, cover-cropped so its horizon lands on the game's own
@@ -722,7 +722,7 @@ at the answer while it is happening to them.
 
 | world | hazard | what it attacks |
 | --- | --- | --- |
-| desert | **Sandstorm** | *where you are* — telegraphed gusts push the runner a whole lane sideways |
+| desert | **Sandstorm** | *the picture* — the sky goes to sand and the far road goes soft; the run is untouched |
 | city | **Blackout** | *what you can see* — the city's power fails and the lane markings go dark |
 | forest | **Fog** | *how far ahead you can plan* — the distance closes in to about 44 m |
 
@@ -741,32 +741,20 @@ be displaced by the milestone chatter. Each world has its own fragment and its o
 of sand sweeping the horizon, every light in the city failing at once, fog rolling across the ground —
 and its own sound caption. `npm run check:prompts` builds and scans all of it with the rest.
 
-**The shove is one whole lane, not a drift.** The runner's lateral position is a lane, so a continuous
-push would be a state the simulation does not have (and a runner hanging between two lanes is a
-collision the player cannot reason about). A gust takes a lane and the run has to take it back — and the
-direction alternates with the hazard's index, so a storm walks the runner one way and then the other.
-A gust lands every **54 m**, not the first cut's 36: at 36 a single storm landed four or five of them,
-close enough together to read as the game steering rather than as wind. Measured since: one storm's
-lane changes with no key pressed sit 107 m apart — 1→2 at 357 m, 2→1 at 464 m — and the probe reads
-**2/2 wind-ups shown first, 2/2 directions matched** (the press it steered through in between is the
-autopilot's, not the storm's).
-
-**Every gust shows its hand first.** For the last **18 m** before a gust lands the storm is visibly
-winding up: the streak layer sweeps the frame in the direction the lane change will take, and the HUD's
-weather badge grows its own line — `← gust` or `gust →`. The direction is not a hint from a second
-system: it is `gustFor`, the same decision that lands the shove, read every frame against the lane the
-runner is in, so a player who moves during the wind-up sees the arrow move with them and what lands is
-what was shown. A gust that finds both side lanes occupied holds at full wind-up until the road opens:
-not a warning that expires, but a storm leaning on a door it is waiting to open.
-
-**The storm may take a lane; it may not take the lane that kills you.** A gust that lands the runner in
-a lane an obstacle is already standing in is not a hazard, it is a hit the player had no way to answer —
-and it reads as the game moving them into the obstacle rather than as weather. So every gust is checked
-before it lands (`laneClearFor`, inside `gustFor`): if the lane the wind wants has an obstacle within
-the next 22 m, the gust goes the other way; if both side lanes are occupied ahead, the gust is held and
-lands the moment the road opens. The storm still takes a lane — that is the hazard — but it can no longer take the one
-that is already occupied. 22 m is over a second at every world's top speed, so what the player gets is
-a decision rather than a coin flip.
+**The storm takes the picture, and only the picture.** The desert's weather used to take a lane: a gust
+every **54 m** moved the runner one lane sideways, direction alternating, each gust checked against the
+road first so it could not land the player in an obstacle it had already seen. It was reported twice as
+a bug, and both reports said the same thing: a run that moves with no key behind it reads as the game
+playing itself. The telegraph built for it — a streak layer, a HUD arrow, an **18 m** wind-up — only
+made the movement better announced, never explained; the player still lost a lane they had chosen. A
+hazard may take the light or the planning distance; it may not take the wheel. So the shove — with the
+fairness check and the wind-up built around it — is gone (`gustFor`, `laneClearFor`, `WIND_METRES`,
+`WIND_LEAD_METRES`, `publishGust`), and the desert's storm is what the world was already drawing: the
+scrim over the picture, the haze pulling the far dunes soft, the sky staining before it lands. The
+schedule, the warning band and the HUD announcement are untouched — the storm still arrives and the
+world still answers it (measured since: warnings at 241 m and 719 m of one unbroken run) — but the lane
+is the player's through it, and a lane change with no key press behind it is the probe's whole fault
+line for this world: 14 changes on that run, **14 with a key behind them, 0 without**.
 
 **The blackout takes light, and light is information.** The road's and the apron's own materials are
 driven down to 30% of their graded colour — the lane markings are painted into the colour map, so the
@@ -807,9 +795,9 @@ queued, because a distance milestone from four seconds ago is not news.
 restarting through the card when the hazard ends the run, which is allowed to happen — and brackets the
 picture with two clear frames a second apart against the peak frame, so the numbers above are a change
 and not a drift. `window.__runfield()` reports the phase, the intensity, how many hazards the run has
-announced, the lane, which is where a shove shows up without a key behind it, and the wind-up a gust
-should have raised before it — and the probe holds every storm shove against the `--gust` lead sampled
-before it, so a lane that changed itself is a fault rather than a note.
+announced, and the lane — and the probe reads every lane change against the last key press, so a lane
+that changed itself is a fault rather than a note. The desert's storm is picture-only, so this world's
+number is held at zero.
 
 ## The skill ceiling
 
@@ -1540,10 +1528,10 @@ node tools/pickup-probe.mjs http://[::1]:5199/            # or WORLD=city, DEADL
 
 `tools/hazard-probe.mjs` does the same for the weather: a run per attempt (restarting through the card,
 because a hazard is allowed to end a run), an autopilot that only *dodges* — so a lane change with no
-key press behind it is unambiguously the storm's — and the HUD badge, the `:root` attributes (including
-the `--gust` wind-up and its direction), the feed and the lane read from `window.__runfield()` as it
-goes. The wind-up is checked rather than admired: every storm shove has to find a `--gust` lead in the
-samples before it, or the run reports a lane that changed itself. Its frames are a bracket: two clear ones
+key press behind it is unambiguously a fault, whichever world it happens in — and the HUD badge, the
+`:root` attributes (including `--weather`), the feed and the lane read from `window.__runfield()` as it
+goes. The lane is the fault line: every change is timestamped against the last key press, and the
+desert's storm, picture-only now, must score zero. Its frames are a bracket: two clear ones
 1.2 s apart for the world's own drift, one at the peak, one after it has passed if the run lived. It
 ends with the `frame-report.mjs` lines that turn the bracket into the numbers quoted above.
 

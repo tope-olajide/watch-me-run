@@ -53,8 +53,8 @@ export type RunState = {
   /**
    * The world's own weather, as the HUD reads it: the card's hazard arriving, here, and how hard.
    *
-   * It lives in the run state rather than beside it because it *is* run state: the storm moves the
-   * runner, the blackout takes the light, the fog takes the planning distance, and all three are
+   * It lives in the run state rather than beside it because it *is* run state: the storm takes the
+   * picture, the blackout takes the light, the fog takes the planning distance, and all three are
    * decided per frame from the same distance and difficulty every other rule reads. The HUD is fed
    * from this by the same five-a-second progress tick that feeds the counters.
    */
@@ -81,9 +81,11 @@ export type RunState = {
  * The three ways a world turns on a run, and whether it is here yet.
  *
  * The kinds are the shared vocabulary between the schedule (`hazards.ts`), the run state the HUD
- * reads, and the prompts that ask the world to *look* like it: one word per channel of attack.
+ * reads, and the prompts that ask the world to *look* like it: one word per condition. Only two of
+ * them take anything from the run — the blackout takes the light, the fog takes the planning distance;
+ * the storm is the picture's hazard and leaves the driving alone (see the note in `hazards.ts`).
  */
-export type HazardKind = "shove" | "blackout" | "fog";
+export type HazardKind = "storm" | "blackout" | "fog";
 export type HazardPhase = "calm" | "warning" | "active";
 
 export type WorldEvent =
@@ -153,7 +155,7 @@ export const isPlayEvent = (event: WorldEvent): boolean =>
 
 export const initialRunState = (environment: Environment): RunState => ({
   environment,
-  hazard: { kind: "shove", name: "", phase: "calm", intensity: 0 },
+  hazard: { kind: "storm", name: "", phase: "calm", intensity: 0 },
   flow: 0,
   threads: 0,
   distance: 0,

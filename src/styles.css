@@ -552,14 +552,6 @@ html[data-surface="menu"] .world-layer { opacity: 0 !important; animation: none;
 .hud-hazard[data-phase="warning"] { color: #f6c84c; animation: hazard-warn 1.1s ease-in-out infinite; }
 .hud-hazard[data-phase="active"] { color: var(--hazard, #f6c84c); background: #071014c9; }
 @keyframes hazard-warn { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
-/* The gust's wind-up line, inside the weather badge: the badge says the storm is here, this says the
-   next lane it takes and which way. Both the word and the arrow are generated content rather than
-   text, so the badge reads as what it says and not as what it might say; `--gust` lays the line out
-   only while a wind-up is up, so the quiet badge keeps its size, and `data-gust-dir` picks which side
-   the arrow sits on. */
-.hud-gust { max-height: calc(var(--gust, 0) * 16px); opacity: var(--gust, 0); overflow: hidden; font-style: normal; transition: max-height .2s linear, opacity .2s linear; }
-.hud-gust::before { content: "gust →"; color: #ffe6bd; }
-:root[data-gust-dir="left"] .hud-gust::before { content: "← gust"; }
 /* A pickup spending itself, called out where the run is. The chip in the HUD is a *state*; this is the
    moment it changed, and a state change whose only sign is an absence is the one thing a player cannot
    be asked to notice at speed. Below the top strip and above the play, in the pickup's own colour —
@@ -590,19 +582,10 @@ html[data-surface="menu"] .world-layer { opacity: 0 !important; animation: none;
    `--weather` is the simulation's own intensity (see `hazards.ts`), so the scrim swells and passes
    with the hazard rather than switching on at a phase boundary. */
 .hazard-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: var(--weather, 0); transition: opacity .45s linear; }
-:root[data-hazard="shove"] .hazard-layer { background: linear-gradient(180deg, rgba(232,163,102,.5), rgba(214,150,96,.16) 46%, rgba(96,58,32,.45)); }
+:root[data-hazard="storm"] .hazard-layer { background: linear-gradient(180deg, rgba(232,163,102,.5), rgba(214,150,96,.16) 46%, rgba(96,58,32,.45)); }
 :root[data-hazard="blackout"] .hazard-layer { background: radial-gradient(125% 85% at 50% 84%, rgba(2,5,9,0) 14%, rgba(2,5,9,.94) 64%); }
 :root[data-hazard="fog"] .hazard-layer { background: linear-gradient(180deg, rgba(206,222,212,.76), rgba(206,222,212,.3) 56%, rgba(206,222,212,.08)); }
 :root[data-hazard-phase="warning"] .hazard-layer { animation: hazard-warn 1.1s ease-in-out infinite; }
-/* The desert's wind-up, screen-space like the weather it belongs to: the streaks that rise before a
-   gust takes a lane. `--gust` is the simulation's own lead (0..1, see `hazards.ts`), so the layer
-   swells through the wind-up and is gone the frame the lane changes; `data-gust-dir` picks which way
-   the streaks sweep — the lane the gust will take. The pattern is exactly as wide as the animation's
-   travel, so the scroll loops without a seam. */
-.gust-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: calc(var(--gust, 0) * .85); transition: opacity .2s linear; background: linear-gradient(180deg, rgba(240,208,158,.14), rgba(240,208,158,0) 42%, rgba(211,159,105,.1)); }
-.gust-layer::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, rgba(244,216,172,0) 0 44px, rgba(244,216,172,.17) 44px 63px, rgba(244,216,172,0) 63px 150px); background-size: 150px 100%; animation: gust-streaks 1.1s linear infinite; }
-:root[data-gust-dir="right"] .gust-layer::before { animation-direction: reverse; }
-@keyframes gust-streaks { from { background-position: 0 0; } to { background-position: -150px 0; } }
 /* The run shell's own palette.
 
    The menu carries its accent on `.menu[data-world]`, and the run shell is a *different* element — so

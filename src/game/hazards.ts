@@ -4,12 +4,19 @@ import type { Environment, HazardKind, HazardPhase } from "./run-state";
  * The world's own weather.
  *
  * Every world already *promised* one: the menu card sells the desert as *Sandstorm*, the city as
- * *Blackout*, the forest as *Fog*, and the HUD's pressure meter is named for it. Nothing in the run
- * ever did it. The hazard is that promise made playable: it arrives on a rhythm, it is announced
- * before it lands, it gets worse as the run gets harder, and each world's attacks a different channel
- * — the desert attacks where you *are*, the city attacks what you can *see*, the forest attacks how
- * far ahead you can *plan*. That difference is the reason to play a second world rather than a second
- * pace.
+ * *Blackout*, the forest as *Fog*, and the HUD's pressure meter is named for it. The hazard is that
+ * promise made playable: it arrives on a rhythm, it is announced before it lands, and it gets worse as
+ * the run gets harder. The city and the forest take a rule away — the light, the planning distance —
+ * and the desert takes none: its storm is the one hazard that is a condition of the *picture*, the
+ * scrim, the haze and the horizon, with the road playing on unchanged underneath it.
+ *
+ * That was not always so. The desert's storm used to take a lane: a gust every so many metres moved
+ * the runner one lane sideways, direction alternating, every gust checked against the road first so it
+ * could not shove them into an obstacle. It was reported twice as a bug — a run that moves with no key
+ * behind it reads as the game playing itself, and the telegraph built for it (streaks, a HUD line, an
+ * 18 m wind-up) only made the movement better announced, never explained. A hazard may take the light
+ * or the distance; it may not take the wheel. So the lane shove, its fairness check and its whole
+ * wind-up are gone, and what remains is the weather the world was already drawing.
  *
  * The schedule is measured in metres of run rather than seconds, for the same reason the pickups are:
  * a slow world and a fast one should meet the same weather for the same run, and a paused run must not
@@ -26,9 +33,7 @@ export type HazardState = {
    * and what the world is asked about when it arrives.
    */
   intensity: number;
-  /** Metres into the active window (0 while warning or calm), which the shove's rhythm runs on. */
-  since: number;
-  /** Which cycle this is, so two hazards in a row do not shove the same way twice. */
+  /** Which cycle this is, so each hazard is announced once and counted per run. */
   index: number;
 };
 
@@ -42,7 +47,7 @@ type HazardRecipe = { kind: HazardKind; name: string };
  * compile error in the place that decides what the storm does, not silently inherit a new name.
  */
 const RECIPES: Record<Environment, HazardRecipe> = {
-  desert: { kind: "shove", name: "Sandstorm" },
+  desert: { kind: "storm", name: "Sandstorm" },
   city: { kind: "blackout", name: "Blackout" },
   forest: { kind: "fog", name: "Fog" },
 };
@@ -60,29 +65,8 @@ const SPACING_SLOPE = 140;
 const ACTIVE_SLOPE = 60;
 /** Never let the quiet between two hazards disappear: a world that is always storming is wallpaper. */
 const QUIET_FLOOR = 90;
-/**
- * Metres between one shove and the next, inside a sandstorm.
- *
- * The first cut took a lane every 36 m — four or five gusts in one storm, close enough together that
- * the run was being steered by the weather more than by the player, and close enough (measured in
- * play) to read as the game moving the runner rather than as wind. 54 m is a gust every three to six
- * seconds: the storm still owns the lane rhythm, and there is room between gusts for the run to answer
- * the last one before the next wind-up starts.
- */
-export const WIND_METRES = 54;
 
-/**
- * How far before a gust lands its wind-up starts.
- *
- * Every gust is shown before it takes the lane: from this distance the streaks are up, the HUD names
- * it, and the direction on screen is the lane the gust will actually take. 18 m is over a second at
- * the fastest world's top speed and over two at the opening pace — the same decision window the grab
- * rules are keyed to (`ESCAPE_DISTANCE` is 16 m) — so what the storm is about to do is a thing the
- * player had time to read rather than a lane that changed itself.
- */
-export const WIND_LEAD_METRES = 18;
-
-const CALM: HazardState = { kind: "shove", name: "", phase: "calm", intensity: 0, since: 0, index: 0 };
+const CALM: HazardState = { kind: "storm", name: "", phase: "calm", intensity: 0, index: 0 };
 
 /**
  * Where the weather is at this distance.
@@ -117,7 +101,6 @@ export function hazardAt(
       ...recipe,
       phase: "warning",
       intensity: 0.15 + (into / WARNING_METRES) * 0.2,
-      since: 0,
       index,
     };
   }
@@ -128,43 +111,11 @@ export function hazardAt(
       ...recipe,
       phase: "active",
       intensity: 0.35 + 0.65 * Math.sin((since / active) * Math.PI),
-      since,
       index,
     };
   }
 
   return { ...CALM, ...recipe, index };
-}
-
-/**
- * Which way the storm is pushing, and whether a shove is due.
- *
- * A shove is one whole lane, not a drift: the road is three lanes wide and the runner's lateral
- * position is a lane, so a continuous push would be a state the simulation does not have (and a
- * runner hanging between two lanes is a collision the player cannot reason about). One lane displaced
- * is a decision the player can answer, and answering it is the hazard: the storm takes a lane, and
- * the run has to take it back before the next obstacle arrives.
- */
-export function shovesFor(since: number): number {
-  return Math.floor(since / WIND_METRES);
-}
-
-/**
- * How far through its wind-up the next gust is: 0 while the wind is quiet, 1 as it lands.
- *
- * `shoves` is how many gusts have already landed, which matters for the one case the schedule alone
- * cannot describe: a gust that found both side lanes occupied is still owed — it holds at full
- * wind-up until the road opens rather than being spent or landing unwarned.
- */
-export function gustLead(since: number, shoves: number): number {
-  const due = shovesFor(since);
-  if (shoves < due) return 1;
-  const gap = (due + 1) * WIND_METRES - since;
-  return gap >= WIND_LEAD_METRES ? 0 : 1 - gap / WIND_LEAD_METRES;
-}
-
-export function windFor(index: number, shove: number): -1 | 1 {
-  return (index + shove) % 2 === 0 ? -1 : 1;
 }
 
 /** How much light the run has left, 1 in every world but the blacked-out one. */
@@ -179,9 +130,9 @@ export function hazardLight(intensity: number): number {
  * sandstorm that does not haze the distance is a colour cast, and the far dunes going soft is most of
  * what a storm does to a picture. The forest's closes inside the road's own fade (full at 40 m, gone at
  * 83 m), so the ground the runner is planning on is already dissolving; the desert's only softens the
- * far layer, and the storm is paid for in lanes instead. Near is held well past the runner in both
- * cases: fogging the character the player is steering would make the hazard a smudge on the screen
- * rather than a condition of the world.
+ * far layer — its storm takes everything from the picture and nothing from the run. Near is held well
+ * past the runner in both cases: fogging the character the player is steering would make the hazard a
+ * smudge on the screen rather than a condition of the world.
  */
 export function hazardFog(hazard: HazardState, difficulty: number): { near: number; far: number } {
   if (hazard.kind === "fog") {
@@ -190,7 +141,7 @@ export function hazardFog(hazard: HazardState, difficulty: number): { near: numb
       far: 1200 - (1200 - (44 - difficulty * 10)) * hazard.intensity,
     };
   }
-  if (hazard.kind === "shove") {
+  if (hazard.kind === "storm") {
     return { near: 700 - 620 * hazard.intensity, far: 1200 - 1060 * hazard.intensity };
   }
   return { near: 700, far: 1200 };
@@ -229,24 +180,4 @@ export function publishHazard(state: HazardState): void {
     lastIntensity = state.intensity;
     root.style.setProperty("--weather", state.intensity.toFixed(3));
   }
-}
-
-/* ---- the gust's wind-up, published the same way -------------------------------------------------
- *
- * The desert's gusts are the one hazard with a rhythm inside the hazard, so they need a channel of
- * their own: the scrim answers "the storm is here", and these two answer "and it is about to take a
- * lane — this one". `--gust` is the lead (0..1, see `gustLead`) and drives the streaks' and the HUD
- * line's opacity; `data-gust-dir` is the lane it will take, which is what the streak sweep reads.
- * Written from the frame loop, so real changes only, for the same reason as `--weather`.
- */
-let lastGustLead = -1;
-
-export function publishGust(lead: number, dir: -1 | 1): void {
-  if (Math.abs(lead - lastGustLead) < 0.02) return;
-  lastGustLead = lead;
-  const root = document.documentElement;
-  root.style.setProperty("--gust", lead.toFixed(3));
-  // Deliberately not cleared when the lead ends: the layers fade out through their own CSS
-  // transitions, and a direction that vanished mid-fade would flip the streaks as they leave.
-  if (lead > 0) root.dataset.gustDir = dir < 0 ? "left" : "right";
 }
