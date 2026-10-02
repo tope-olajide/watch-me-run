@@ -89,12 +89,13 @@ export type WorldSnapshot = {
   /** True while the player has paused the run, which pauses generation with it. */
   pauseRequested: boolean;
   /**
-   * True while a supplied landscape is being pinned into the session.
+   * True while the world is being rebuilt for the request — a picture being pinned, or a change of
+   * world being started over.
    *
-   * Pinning is a rebuild — `reset`, then the image, then `start` — and it is the one thing that must
-   * not happen underneath a run: a reset is a hard cut, and one landing in the middle of the dive
-   * would throw away the launch shot the transition had just asked for. So the intent is published
-   * from the moment the player picks a picture, and the menu holds the run until it is done.
+   * Both are a rebuild — `reset`, the image if there is one, then `start` — and both must not happen
+   * underneath a run: a reset is a hard cut, and one landing in the middle of the dive would throw
+   * away the launch shot the transition had just asked for. So the intent is published from the moment
+   * the request is made, and the loading screen holds the run until it is done.
    */
   pinning: boolean;
   /** What Orbis reports about the session as it stands. */

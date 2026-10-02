@@ -26,7 +26,17 @@ import {
 import { roadGrade } from "./road-grade";
 import { ghostAhead, ghostAt, LINE_METRES, type RunSummary } from "./records";
 import { markerEnabled } from "./marker";
-import { hazardAt, hazardFog, hazardLight, publishHazard, readHazard, shovesFor, windFor } from "./hazards";
+import {
+  gustLead,
+  hazardAt,
+  hazardFog,
+  hazardLight,
+  publishGust,
+  publishHazard,
+  readHazard,
+  shovesFor,
+  windFor,
+} from "./hazards";
 import { environmentLook } from "./world-look";
 import { apronField, apronHeight, sampleApron, type ApronField, type ApronSample } from "./apron";
 import {
@@ -1486,6 +1496,40 @@ function laneClearFor(obstacles: Obstacle[], lane: number): boolean {
   );
 }
 
+type GustPlan = {
+  /** Which way the wind is blowing: the lane it will take, or the kerb it spends itself against. */
+  dir: -1 | 1;
+  /** Whether the gust ends in a lane change. A push into the edge of the road moves nobody. */
+  move: boolean;
+  /**
+   * The wind wants a lane and neither side is clear ahead: the gust is owed, and its wind-up holds at
+   * full until the road opens. What the HUD shows meanwhile is the lane it will take when it does.
+   */
+  waiting: boolean;
+};
+
+/**
+ * What this gust will actually do, read from the lane the runner is in now.
+ *
+ * The decision lives in one function because two readers have to agree: the frame that lands the gust,
+ * and the wind-up that has been showing it for the last `WIND_LEAD_METRES`. If they could disagree,
+ * the telegraph would be a promise the shove then breaks — which is the whole thing the wind-up exists
+ * to stop being true.
+ */
+function gustFor(obstacles: Obstacle[], from: number, index: number, shove: number): GustPlan {
+  const wind = windFor(index, shove);
+  const wanted = THREE.MathUtils.clamp(from + wind, 0, LANE_COUNT - 1);
+  if (wanted === from) return { dir: wind, move: false, waiting: false };
+  if (laneClearFor(obstacles, wanted)) return { dir: wind, move: true, waiting: false };
+  const away = THREE.MathUtils.clamp(from - wind, 0, LANE_COUNT - 1);
+  // Named rather than written as `-wind`, because TS widens a negated `-1 | 1` to `number`.
+  const windAway: -1 | 1 = wind === 1 ? -1 : 1;
+  if (away !== from && laneClearFor(obstacles, windAway)) {
+    return { dir: windAway, move: true, waiting: false };
+  }
+  return { dir: wind, move: false, waiting: true };
+}
+
 /** What a run is played under when nobody said otherwise: the standard deal, in one place. */
 /**
  * The most line a run may carry, in numbers: 1,000 samples, which is 20 km.
@@ -1602,6 +1646,10 @@ function RunnerSimulation({
   /** A gust's leftover push, decaying: what the world layer feels of the storm. */
   const gust = useRef(0);
   const gustDir = useRef<-1 | 1>(-1);
+  /** How far through the next gust's wind-up the storm is: 0 quiet, 1 about to land. */
+  const windup = useRef(0);
+  /** Where that wind-up is pointed, for the streaks, the HUD line and the development readout. */
+  const windupDir = useRef<-1 | 1>(-1);
   /** The threading moment: its clock, the camera's pull-in, and the time scale the run runs at. */
   const slowmo = useRef(0);
   const punch = useRef(0);
@@ -1647,8 +1695,9 @@ function RunnerSimulation({
   // runner lives in the WebGL scene and nowhere in the DOM, so "which pickup was in which lane, and
   // did the magnet actually bend that coin" is not a question a screenshot can answer. What is
   // reported is the field *in front of* the runner — z below `PLAYER_Z` is the direction the run
-  // travels — because a piece two hundred metres up the road is a fact about the generator, and the
-  // generator can be read directly in `pattern-field.ts`.
+  // travels, within a window wide enough to reach past the opening clearance, so a run's first row is
+  // reported from its first frame — because a piece two hundred metres up the road is a fact about
+  // the generator, and the generator can be read directly in `pattern-field.ts`.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const state = () => runState.current;
@@ -1664,16 +1713,20 @@ function RunnerSimulation({
           collected: pickup.collected,
         })),
       obstacles: obstacles.current
-        .filter((obstacle) => !obstacle.passed && obstacle.z > PLAYER_Z - 40)
+        .filter((obstacle) => !obstacle.passed && obstacle.z > PLAYER_Z - 70)
         .map((obstacle) => ({ lane: obstacle.lane, kind: obstacle.kind, z: round(obstacle.z) })),
       // The coins in front of the runner, with the offset a magnet has moved them by: the pull is a
       // number in the simulation and nothing in the DOM.
       coins: coins.current
-        .filter((coin) => !coin.collected && coin.z > PLAYER_Z - 40)
+        .filter((coin) => !coin.collected && coin.z > PLAYER_Z - 70)
         .map((coin) => ({ lane: coin.lane, x: Math.round((coin.x ?? 0) * 100) / 100, z: round(coin.z) })),
       // The weather and the lane, with the field: what the world is doing to the run, and where the
       // run actually is — the two things a shove moves without a key being pressed.
       hazard: { ...state().hazard },
+      // The wind-up of the next gust, if one is up: how far through it the storm is and which lane it
+      // is pointed at. A shove can be checked against this — a gust that landed with no lead before it
+      // is a lane that changed itself, which is exactly what the wind-up exists to prevent.
+      gust: { lead: Math.round(windup.current * 100) / 100, dir: windup.current > 0 ? windupDir.current : 0 },
       hazardFired: hazardFired.current,
       lane: laneRef.current,
       // The skill ceiling, as the simulation is actually running it: the flow value, the gaps it has
@@ -1719,6 +1772,9 @@ function RunnerSimulation({
     timers.current.forEach((id) => window.clearTimeout(id));
     timers.current = [];
     publishWorldMotion(environment, environmentPace[environment].baseSpeed, 0, 0, 0, true);
+    // The wind-up is the one weather value that could be left mid-ramp: an exit during a gust would
+    // otherwise leave the streaks frozen over the menu at whatever lead the run had reached.
+    publishGust(0, windupDir.current);
   }, []);
 
   useEffect(() => {
@@ -1857,42 +1913,41 @@ function RunnerSimulation({
     // many gusts the storm owes by now, so the rhythm is a function of the distance rather than of
     // the frame rate — and a frame that lands two is two lanes, in the right directions.
     //
-    // Every gust is checked against the road before it lands (`laneClearFor`): the storm may take a
-    // lane, but it may not take the lane an obstacle is standing in, because that is not a hazard the
-    // player can answer — it is the game moving them into the thing that kills them.
+    // Every gust is checked against the road before it lands (`gustFor`): the storm may take a lane,
+    // but it may not take the lane an obstacle is standing in, because that is not a hazard the player
+    // can answer — it is the game moving them into the thing that kills them.
     if (!over.current && hazard.kind === "shove" && hazard.phase === "active") {
       const due = shovesFor(hazard.since);
       // The lane the winds are read against, carried through the loop: two gusts in one frame is two
       // lanes, and React's state has not re-rendered between them.
       let from = laneRef.current;
       while (shoves.current < due) {
-        const wind = windFor(hazard.index, shoves.current);
-        const wanted = THREE.MathUtils.clamp(from + wind, 0, LANE_COUNT - 1);
-        if (wanted === from) {
-          // The storm is pushing into the edge of the road: there is no lane to take, and a gust spent
-          // on the kerb should not be saved up to land later.
-          shoves.current += 1;
-          continue;
-        }
-        const away = THREE.MathUtils.clamp(from - wind, 0, LANE_COUNT - 1);
-        // Named rather than written as `-wind`, because TS widens a negated `-1 | 1` to `number` and the
-        // gust's direction is what the world layer is told to lean by.
-        const windAway: -1 | 1 = wind === 1 ? -1 : 1;
-        const go: -1 | 1 | 0 = laneClearFor(obstacles.current, wanted)
-          ? wind
-          : away !== from && laneClearFor(obstacles.current, windAway)
-            ? windAway
-            : 0;
+        const plan = gustFor(obstacles.current, from, hazard.index, shoves.current);
         // Both lanes ahead are occupied: the gust holds until the road opens rather than landing the
-        // runner in one of them. It is still owed, so the storm lands it the moment it can.
-        if (go === 0) break;
+        // runner in one of them. It is still owed, so the storm lands it the moment it can — and its
+        // wind-up below holds at full while it waits.
+        if (plan.waiting) break;
         shoves.current += 1;
+        // The storm is pushing into the edge of the road: there is no lane to take, and a gust spent
+        // on the kerb should not be saved up to land later.
+        if (!plan.move) continue;
         gust.current = 1;
-        gustDir.current = go;
-        from = THREE.MathUtils.clamp(from + go, 0, LANE_COUNT - 1);
+        gustDir.current = plan.dir;
+        from = THREE.MathUtils.clamp(from + plan.dir, 0, LANE_COUNT - 1);
         setLane(from);
       }
+      // The gust's wind-up, computed from the same decision that lands it: how far off it is (`--gust`
+      // ramps the streaks and the HUD line) and which lane it is pointed at (`data-gust-dir`). Read
+      // against the lane the runner is in *now*, so a player who moves during the wind-up sees the
+      // direction change with them rather than being promised a lane the gust no longer takes.
+      windup.current = gustLead(hazard.since, shoves.current);
+      if (windup.current > 0) {
+        windupDir.current = gustFor(obstacles.current, laneRef.current, hazard.index, shoves.current).dir;
+      }
+    } else {
+      windup.current = 0;
     }
+    publishGust(windup.current, windupDir.current);
     gust.current = Math.max(0, gust.current - delta * 1.6);
 
     // The forest's fog is the only hazard the WebGL layer cannot borrow from the DOM: the video is

@@ -147,11 +147,16 @@ export const ESCAPE_DISTANCE = FASTEST_SPEED * ESCAPE_S;
  * past the line instead, so the opening stretch is empty by construction rather than by luck.
  *
  * One number covers both ways a run can start: a fresh run and "Run again" are the same remount of
- * the simulation, so the clearance is applied at every line. Two escape windows rather than one,
- * because the launch surge is still decaying through the opening seconds — the same distance is
- * covered faster there than anywhere else in the run.
+ * the simulation, so the clearance is applied at every line.
+ *
+ * Three escape windows rather than two: at two, the first row was met 3.3–3.8 s in, which still
+ * played as the content arriving on top of the player. At three, the first row is met 5.0 s into a
+ * desert run and 5.6–5.8 s into a forest or city one — simulated at 60 Hz against `speedAt` plus the
+ * `LAUNCH_BOOST` decay in `src/game/RunnerScene.tsx`, which is the speed model the run itself uses.
+ * Metres rather than seconds because the surge makes the opening the fastest stretch of the run, so
+ * the clearance is bought at that pace rather than at cruise.
  */
-export const START_CLEARANCE = ESCAPE_DISTANCE * 2;
+export const START_CLEARANCE = ESCAPE_DISTANCE * 3;
 
 /** Difficulty at a distance into the run: 0 at the line, 1 once that world's content peaks. */
 export function difficultyAt(environment: Environment, distance: number): number {

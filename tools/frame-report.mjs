@@ -127,6 +127,49 @@ if (regionFlag !== -1) {
 }
 
 /**
+ * ASCII composition map — `node tools/frame-report.mjs shot.png --ascii`. A coarse luminance map of
+ * the frame so a capture can be *read* in a terminal: the road is a smooth mass, the generated
+ * landscape is texture, and a skyline is a run of alternating light and dark columns. `--cols` and
+ * `--rows` set the grid (96x28 by default), and `--gamma` lifts the shadows (2 = honest, 0.5 = a
+ * night frame opened up) — the default is 1.
+ */
+const asciiFlag = paths.indexOf("--ascii");
+if (asciiFlag !== -1) {
+  const flagValue = (name) => {
+    const index = paths.indexOf(name);
+    return index === -1 ? null : Number(paths[index + 1]);
+  };
+  const cols = flagValue("--cols") ?? 96;
+  const rows = flagValue("--rows") ?? 28;
+  const gamma = flagValue("--gamma") ?? 1;
+  const ramp = " .:-=+*#%@";
+  console.log(`ascii — ${path} (${width}x${height}, ${cols}x${rows}, gamma ${gamma})`);
+  for (let row = 0; row < rows; row += 1) {
+    const y0 = Math.floor((row / rows) * height);
+    const y1 = Math.max(y0 + 1, Math.floor(((row + 1) / rows) * height));
+    let line = "";
+    for (let column = 0; column < cols; column += 1) {
+      const x0 = Math.floor((column / cols) * width);
+      const x1 = Math.max(x0 + 1, Math.floor(((column + 1) / cols) * width));
+      let sum = 0;
+      let count = 0;
+      for (let y = y0; y < y1; y += 2) {
+        for (let x = x0; x < x1; x += 2) {
+          const index = (y * width + x) * channels;
+          sum += 0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2];
+          count += 1;
+        }
+      }
+      const luma = sum / Math.max(1, count);
+      const level = Math.pow(Math.min(1, Math.max(0, luma / 255)), gamma);
+      line += ramp[Math.min(ramp.length - 1, Math.round(level * (ramp.length - 1)))];
+    }
+    console.log(`${String(Math.round((row / rows) * 100)).padStart(3)}% ${line}`);
+  }
+  process.exit(0);
+}
+
+/**
  * Skyline readout — `node tools/frame-report.mjs --cliff shot.png`. Finds the sharpest darkening step
  * between adjacent rows, the same rule `src/orbis/world-align.ts` uses to find the generated horizon.
  * Run it on a `.video.png` capture (the world layer alone, transforms and all) to check where the

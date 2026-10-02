@@ -17,10 +17,11 @@ import { useWorld, world, type WorldSnapshot } from "./orbis/world-bus";
  *
  * So it names the step it is on. Every one of the four is a real state Orbis reports about itself (see
  * `WorldSessionState`), not a timer pretending to be progress: `connecting`, then generating, then
- * `pinning` — which is the only step that can take a while by itself, because a landscape is a
- * rebuild rather than a prompt — and finally the start, and the first frames it produces. The elapsed
- * count is there for the same reason: a slow step should look slow rather than look broken, and a
- * player who knows it has been nine seconds can decide to wait.
+ * `pinning` — which is the only step that can take a while by itself, because both a landscape and a
+ * change of world are a rebuild rather than a prompt the running session blends into — and finally the
+ * start, and the first frames it produces. The elapsed count is there for the same reason: a slow step
+ * should look slow rather than look broken, and a player who knows it has been nine seconds can decide
+ * to wait.
  *
  * ## It can give up, and that is a feature
  *
@@ -58,6 +59,12 @@ const LOADING_FALLBACK_MS = 55_000;
  * is handed a playable run as soon as it is clear that Orbis is not the holdup, and the world joins
  * from behind the run when its retry lands (see the recovery effect in `WorldLayer`). The clock is
  * restarted from the moment the error arrived, so a slow-but-healthy start is never cut short by it.
+ *
+ * A rebuild is the exception. While one is in flight (`pinning`) the link is *meant* to restart — a
+ * `reset` ends the old session and a new one is brought up — so an interruption there is the build's
+ * own noise rather than a diagnosis, and cutting the wait short hands the run the world the player
+ * just replaced, which is exactly the failure this screen exists to prevent. A rebuild that genuinely
+ * fails is still bounded by the full budget, and the world layer is retrying underneath it.
  */
 const LOADING_ERROR_FALLBACK_MS = 20_000;
 
@@ -100,7 +107,7 @@ function stageIndex(state: WorldSnapshot, framesGivenUp: boolean): number {
 }
 
 /** What the step is doing, in the player's terms rather than the SDK's. */
-function stageLine(state: WorldSnapshot, stage: number): string {
+function stageLine(state: WorldSnapshot, stage: number, label: string): string {
   if (state.error) return state.error;
   switch (stage) {
     case 0:
@@ -110,7 +117,7 @@ function stageLine(state: WorldSnapshot, stage: number): string {
     case 2:
       return state.landscape
         ? `Placing ${state.landscape.label} on the horizon line and growing the world from it`
-        : "Rebuilding the world from your picture";
+        : `Starting the world over so your run opens in ${label}`;
     case 3:
       return state.session.started
         ? "The world is generating — waiting for its first frames to reach the screen"
@@ -124,7 +131,7 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
   const state = useWorld();
   const [timedOut, setTimedOut] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const failed = Boolean(state.error);
+  const failed = Boolean(state.error) && !state.pinning;
   /** Set once the hand-off has been made, so a re-render cannot report it twice. */
   const reported = useRef(false);
   /** When generation first reported itself running, which is when the wait for frames is measured from. */
@@ -218,9 +225,9 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
   }, [state.session.started, streaming, framesGaveUp]);
 
   // Armed: the session has a starting image (if one was asked for), generation is running, nothing is
-  // still being pinned into it, and its first frames are on their way to the screen. The wait is
+  // still being rebuilt into it, and its first frames are on their way to the screen. The wait is
   // measured from the Start press rather than from this mount, so a second run inside the grace window
-  // is instant instead of paying the minimum twice.
+  // — same world, same landscape — is instant instead of paying the minimum twice.
   const armed =
     state.status === "ready" &&
     state.session.started &&
@@ -241,6 +248,13 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
 
   const stage = stageIndex(state, framesGaveUp);
   const live = armed && streaming;
+  // The third step is a rebuild, and which rebuild it is decides what to call it: a staged picture
+  // makes it a pin, and anything else at that step is the world being started over for the world the
+  // player chose. Read off the staged landscape rather than off an event, so the step a player is
+  // looking at is named by the state they are looking at it in.
+  const stages = state.landscape
+    ? STAGES
+    : [STAGES[0], STAGES[1], "Rebuilding your world", STAGES[3]];
 
   return (
     <main
@@ -255,10 +269,10 @@ export default function WorldLoader({ environment, characterId, startedAt, onRea
       <div className="loader-core">
         <span className="eyebrow">Orbis · live world engine</span>
         <h1 className="loader-title">{selected.label}</h1>
-        <p className="loader-line">{timedOut && !armed ? "Orbis is taking longer than usual — starting on the local backdrop. The world will join when it can." : stageLine(state, stage)}</p>
+        <p className="loader-line">{timedOut && !armed ? "Orbis is taking longer than usual — starting on the local backdrop. The world will join when it can." : stageLine(state, stage, selected.label)}</p>
 
         <ol className="loader-stages">
-          {STAGES.map((label, index) => (
+          {stages.map((label, index) => (
             <li
               key={label}
               className={index < stage ? "done" : index === stage ? "active" : "pending"}

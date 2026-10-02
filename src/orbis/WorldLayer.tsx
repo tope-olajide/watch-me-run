@@ -107,8 +107,10 @@ const REARM_ATTEMPTS = 4;
  *
  * The menu is local, so an open session in the menu is one nobody is watching: it is billed whenever
  * it is ready, and it holds the account's single slot. This is a grace window rather than an eviction
- * — a player who finishes a run and starts another inside it finds the world still warm and the
- * loading screen over in well under a second, while one who wanders off is not paying for a menu.
+ * — a player who finishes a run and starts another *in the same world* inside it finds the world still
+ * warm and the loading screen over in well under a second, while one who wanders off is not paying for
+ * a menu. Another world is a rebuild rather than a reuse, and pays its own few seconds (see the arming
+ * effect): the grace is worth most where the session already holds what the run is about to ask for.
  *
  * Sixty seconds is a compromise the cost model does not settle by itself: the value of the window is a
  * restart that skips the loading screen, and a cold start measured on this stack has run from twenty
@@ -163,6 +165,15 @@ const PAUSE_COMMAND_TIMEOUT_MS = 10_000;
 
 /** How long arming waits for the deployment's offered resolutions before starting without them. */
 const RESOLUTION_WAIT_MS = 5_000;
+
+/**
+ * How long a rebuilt world is given to produce its first chunk before the run is handed over anyway.
+ *
+ * Matches the loading screen's own patience with a start that generates but does not paint
+ * (`LOADING_FRAMES_MS` in `src/WorldLoader.tsx`): the frames are the point of waiting, and a world
+ * that will not paint must not hold the run.
+ */
+const REBUILD_FRAMES_MS = 8_000;
 
 /**
  * A lossless in-page trace of the pause reconciler, development only.
@@ -318,7 +329,7 @@ function WorldSession() {
   const sdk = useRef(reactor);
   sdk.current = reactor;
 
-  const { runActive, pauseRequested, world: selectedWorld } = useWorld();
+  const { runActive, pauseRequested, pinning, world: selectedWorld } = useWorld();
   const [request, setRequest] = useState<WorldRequest>();
   const [error, setError] = useState<string>();
   const [needsSound, setNeedsSound] = useState(false);
@@ -369,6 +380,8 @@ function WorldSession() {
   /** Mid-run re-arms tried on the connection currently open, and their timer — see REARM_ATTEMPTS. */
   const rearmAttempts = useRef(0);
   const rearmTimer = useRef(0);
+  /** Chunks completed on the session currently open, counted here for the rebuild's frames wait. */
+  const chunkSeq = useRef(0);
   /** A release the account is still owed, and the retries working on it — see `releaseSession`. */
   const releaseOwed = useRef(false);
   const releaseAttempts = useRef(0);
@@ -396,6 +409,9 @@ function WorldSession() {
           publishSession(readSession(message));
           return;
         case "chunk_complete": {
+          // Counted before it is published: the arming pass waits for this to move when it has
+          // rebuilt the world and wants to hand the run over behind real frames of it.
+          chunkSeq.current += 1;
           // The world's real cadence, handed to anyone who wants to spend an ask where it lands.
           publishChunk({ index: message.chunk_index, at: Date.now() });
           trace("chunk", `index=${message.chunk_index}`);
@@ -485,13 +501,24 @@ function WorldSession() {
     setRequest(next);
     updateWorld({ world: next.environment });
 
-    // A picture the session is not already holding means the next arming pass is a rebuild: `reset`,
-    // the image, then `start`. Raised here, at the request, because that is where the wait begins —
-    // the run's loading screen reads this to say what it is waiting for, and the arming pass clears it
-    // when the rebuild is done, or has honestly failed.
-    if (next.landscape && applied.current.landscape !== next.landscape.id) {
-      updateWorld({ pinning: true });
-    }
+    // A request the session is not already holding means the next arming pass is a rebuild: `reset`,
+    // the image if there is one, then `start`. Raised here, at the request, because that is where the
+    // wait begins — the run's loading screen reads this to say what it is waiting for, and to hold the
+    // run until the world it is asked to dive into exists. The arming pass clears it when the rebuild
+    // is done, or has honestly failed.
+    //
+    // Two things rebuild: a picture the session is not holding (either direction — pinning one, or
+    // handing the world back to a created landscape after a picture), and a change of *world*, which
+    // is a fresh generation rather than a prompt the running session blends into. A cold session
+    // without a picture rebuilds nothing: it is being built for the first time, and the loader's own
+    // stages cover that wait.
+    const stagedLandscape = next.landscape?.id ?? null;
+    const heldLandscape = applied.current.landscape ?? null;
+    const landscapeRebuild =
+      stagedLandscape !== heldLandscape && (stagedLandscape !== null || applied.current.armed === true);
+    const worldRebuild =
+      applied.current.armed === true && applied.current.environment !== next.environment;
+    if (landscapeRebuild || worldRebuild) updateWorld({ pinning: true });
 
     // A session that exists is steered, never reconnected: `connect()` throws "Already connected or
     // connecting" for any status but `disconnected`, which used to surface as a broken world just
@@ -699,8 +726,14 @@ function WorldSession() {
   // after a run ends the menu is still holding the last request for its grace window, and without
   // this a blip in the menu would have the recovery connect a world for a surface that is deliberately
   // local. The request is what to reconnect *to*; a run is why to reconnect at all.
+  //
+  // A rebuild is the second reason to reconnect: the loading screen is holding a run for one
+  // (`pinning` — see `startWorld`), and a rebuild's own `reset` ends the session it was working on, so
+  // a transport that fails to come back on its own leaves the run waiting for a world nothing is
+  // rebuilding. During a run this effect is the only retry; during a rebuild it is the only retry too,
+  // because the arming effect cannot run until the link is back.
   useEffect(() => {
-    if (status !== "disconnected" || !request || !runActive || !everReady.current) return;
+    if (status !== "disconnected" || !request || (!runActive && !pinning) || !everReady.current) return;
     if (reconnectAttempts.current >= RECONNECT_FAST_ATTEMPTS + SLOW_RETRY_ATTEMPTS) return;
 
     const wait =
@@ -713,16 +746,22 @@ function WorldSession() {
       if (requestRef.current) void handlers.current.startWorld(requestRef.current);
     }, wait);
     return () => window.clearTimeout(reconnectTimer.current);
-  }, [request, runActive, status]);
+  }, [pinning, request, runActive, status]);
 
   /**
    * Arm and start the session for the requested world and landscape.
    *
-   * A landscape the player supplied is not a prompt — it is a *condition* of the session. Orbis pins
-   * a starting image before `start` and inherits it through every later chunk, and only `reset`
-   * clears one, so changing the landscape (in either direction, supplied or generated) is a rebuilt
-   * world rather than a morph. A change of *world* on the same landscape stays what it always was: a
-   * prompt swap the model blends into at the next chunk boundary.
+   * Both a landscape the player supplied and a *world* they chose instead of the last one are
+   * conditions of the session rather than prompts: an image can only be pinned before `start` and
+   * only `reset` clears one, and a session steered into a different world by prompt alone blends over
+   * several chunks — measured on a warm session, the frame was still the old world's for the first ten
+   * seconds of the new run and only read as the new world at fifteen, by which point the run it was
+   * meant to open was already a third over. The player picked a place; the one way to open the run
+   * inside it is to rebuild the world, so a change of either one is `reset` and a fresh arm.
+   *
+   * A run in the same world the session already holds is left exactly as it was: the warm session is
+   * reused, nothing is reset, and the next run starts in well under a second (see the grace window in
+   * the idle release below).
    *
    * The teardown is sequenced against the model's own snapshot rather than against a flag of our own,
    * because the two can disagree for a moment after every command — and a `start` issued in that
@@ -769,9 +808,10 @@ function WorldSession() {
       custom: request.landscape !== null,
     };
 
-    // Timed because pinning a landscape is the one thing in this layer a player has to wait for: it
-    // is a rebuild, not a morph, and the menu holds the run until it is done. Knowing which step
-    // costs the seconds is the difference between a fix and a guess.
+    // Timed because rebuilding is the one thing in this layer a player has to wait for: a change of
+    // world or of landscape is a `reset` and a fresh arm rather than a prompt, and the loader holds
+    // the run until it is done. Knowing which step costs the seconds is the difference between a fix
+    // and a guess.
     const armStartedAt = Date.now();
 
     void (async () => {
@@ -780,14 +820,27 @@ function WorldSession() {
         "arm",
         `run=${runActive} recovered=${recoveredMidRun} armed=${armed} started=${sessionRef.current.started} world=${request.environment} landscape=${landscapeKey ?? "generated"}`,
       );
-      let pinTook = 0;
+      let rebuildTook = 0;
+      /** Which condition the rebuild is for, so the console line names the wait the player paid. */
+      let rebuiltFor: "world" | "landscape" | null = null;
       try {
-        // 1. A new landscape needs the previous conditions cleared. `reset` is the only thing that
-        //    clears a starting image, and it must happen before anything is re-armed.
-        if (armed && appliedState.landscape !== landscapeKey) {
+        // 1. A different place needs the previous conditions cleared. `reset` is the only thing that
+        //    clears a starting image and the only thing that starts generation over, and it must
+        //    happen before anything is re-armed.
+        const worldChanged = appliedState.environment !== request.environment;
+        const landscapeChanged = appliedState.landscape !== landscapeKey;
+        const rebuilding = armed && (worldChanged || landscapeChanged);
+        if (rebuilding) {
+          rebuiltFor = worldChanged ? "world" : "landscape";
+          // The world is being rebuilt for a run that is waiting on it, so the rest between chunks is
+          // not a saving here: the frames are wanted, and the rebuild's own wait is the shortest one
+          // that can produce them.
+          window.clearTimeout(restTimer.current);
+          setResting(false);
           const resetAt = Date.now();
           await sdk.current.reset();
           applied.current = {};
+          trace("rebuild", `for=${rebuiltFor} took=${Date.now() - resetAt}ms`);
           // The mirror is updated here rather than waited for: `reset` has already been answered by
           // the time this resolves, and the arming below has to know the session is empty *now* or
           // it would skip the image and the start. The resolution and the available tiers survive a
@@ -800,7 +853,7 @@ function WorldSession() {
             chunk: 0,
             hasImage: false,
           });
-          pinTook += Date.now() - resetAt;
+          rebuildTook += Date.now() - resetAt;
         }
 
         // Read once, after any reset: this is what decides whether the session needs arming at all.
@@ -833,14 +886,14 @@ function WorldSession() {
             uploads.current.set(request.landscape.id, image);
             await sdk.current.setImage({ image });
             await sdk.current.setSeed({ seed: request.landscape.seed });
-            pinTook += Date.now() - imageAt;
+            rebuildTook += Date.now() - imageAt;
           }
 
         }
 
         // 4. The conditions themselves: what it sounds like, and what it is. Sent on both paths — a
-        //    world change on the same landscape is a prompt swap the model blends into, and a freshly
-        //    armed session is being told them for the first time.
+        //    freshly armed session is being told them for the first time, and a rebuild sends them
+        //    again so the world it is about to start is the world the player chose.
         await sendOwn(audioPrompt(view), "audio", "world-audio", request.environment);
         await sendOwn(openingPrompt(view), "video", "world-morph", request.environment);
 
@@ -867,6 +920,25 @@ function WorldSession() {
           await sdk.current.start();
           trace("started", `run=${runActive} recovered=${recoveredMidRun}`);
           console.info("[orbis] generation started");
+
+          // 6. A rebuilt world is not armed until it has produced a frame of the world it was rebuilt
+          //    into. `reset` blanks the video and a fresh session's first chunk is seconds away, so a
+          //    run handed over the moment `start` is answered opens on a black picture — measured on a
+          //    warm session switch, the first desert frame arrived about five seconds after the handoff.
+          //    The loading screen holds the run while `pinning` is up (and says it is waiting for the
+          //    first frames), so waiting here is what puts a world behind the run's opening. Bounded,
+          //    because a run must always start.
+          if (rebuilding) {
+            const chunksBefore = chunkSeq.current;
+            const framesDeadline = Date.now() + REBUILD_FRAMES_MS;
+            while (chunkSeq.current === chunksBefore && Date.now() < framesDeadline) {
+              await new Promise((resolve) => window.setTimeout(resolve, 100));
+            }
+            trace(
+              "rebuild-frames",
+              `chunks=${chunkSeq.current - chunksBefore} waited=${Math.min(REBUILD_FRAMES_MS, Date.now() - framesDeadline + REBUILD_FRAMES_MS)}ms`,
+            );
+          }
         }
 
         applied.current = {
@@ -889,15 +961,15 @@ function WorldSession() {
           rearmTimer.current = window.setTimeout(() => setArmRetry((value) => value + 1), ARM_RETRY_MS);
         }
       } finally {
-        if (pinTook) {
+        if (rebuildTook) {
           console.info(
-            `[orbis] pinned the landscape in ${pinTook}ms, world armed in ${Date.now() - armStartedAt}ms`,
+            `[orbis] rebuilt the world for the ${rebuiltFor} in ${rebuildTook}ms, armed in ${Date.now() - armStartedAt}ms`,
           );
         }
         generation.current = "idle";
-        // The world is armed for the selected landscape, so a run may start. Cleared here rather
-        // than after the await so a failed pin does not hold the menu forever — the world would be
-        // the generated one, which is the honest outcome of an image that would not pin.
+        // The world is armed for the selected world and landscape, so a run may start. Cleared here
+        // rather than after the await so a failed pin does not hold the menu forever — the world
+        // would be the generated one, which is the honest outcome of an image that would not pin.
         updateWorld({ pinning: false });
       }
     })();

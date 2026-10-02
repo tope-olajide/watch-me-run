@@ -2,7 +2,7 @@ import type { Environment, RunState, WorldEvent } from "../game/run-state";
 
 const environmentOpenings: Record<Environment, string> = {
   desert: "an ancient desert at sunset with monumental red dunes and distant ruins",
-  city: "a dense neon city at night with wet streets, distant traffic, and glowing billboards",
+  city: "a dense neon city at night: enormous lit towers and glowing billboards rising over rain-wet streets with distant traffic",
   forest: "an ancient moss-covered forest with fog, enormous trees, and fireflies",
 };
 
@@ -11,19 +11,31 @@ const environmentOpenings: Record<Environment, string> = {
  *
  * The horizon clause below holds the *line* — sky above, ground below — but says nothing about how
  * much frame each side gets, and a night world is where that distinction bites. "A neon city at
- * night" is, to a model, mostly night: left to itself the city opened on an expanse of dark sky
- * with the skyline somewhere far down the frame, and only grew the buildings once the run had been
- * going long enough for the distance events to push it there. The player's first impression of
- * Neon Pursuit was therefore a sky with no city in it.
+ * night" is, to a model, mostly night: left to itself the city opens on an expanse of dark sky with
+ * the skyline somewhere far down the frame, and only grows the buildings once the run has gone far
+ * enough for a distance event to push them there. The player's first impression of Neon Pursuit was
+ * therefore a sky with no city in it.
  *
- * So the city is told where its buildings are from the first frame. Nothing else moves: this is a
- * composition clause, it does not ask for a camera move (a move is the one thing `horizonLine`
- * forbids), and the ground stays as empty as every other world's because the near band still belongs
- * to the game's own road.
+ * So the city is told where its buildings are — and, after the first version of this clause was
+ * measured against a live frame that still put the city's ground line at 73% and its lights below
+ * the game's own horizon, told in the terms a camera actually has: which part of the frame each thing
+ * owns, where the ground line sits, and what shape of picture counts as wrong. "Tall skyline above
+ * the horizon" was satisfiable by a thin distant strip low in a big sky; "the towers own the upper
+ * half and pass the top edge" is not.
+ *
+ * A second measurement — the upper half by then held one lit cluster with night sky across the rest
+ * of its width — added the thing the clause had left implicit: density. "Fills the frame edge to
+ * edge" can be answered by one building too, so the clause now asks for buildings packed in layers
+ * with no wide sky gaps between them and for the skyline to be lit across its whole width, and names
+ * patches of empty dark sky between the buildings as the wrong picture along with the low strip.
+ *
+ * Nothing else moves: this is a composition clause, it does not ask for a camera move (a move is the
+ * one thing `horizonLine` forbids), and the ground stays as empty as every other world's because the
+ * near band still belongs to the game's own road.
  */
 const environmentFraming: Partial<Record<Environment, string>> = {
   city:
-    "The shot is at street level and the city is already there on the very first frame: a dense, tall skyline of lit towers, rooftops and signs fills the frame from the left edge to the right edge immediately above the horizon line, and the visible sky is only a narrow band above the buildings, never an open expanse of night sky.",
+    "The shot is at street level looking down a neon avenue, and the skyline is already there on the very first frame, dense and continuous: enormous towers and billboards fill the upper half of the picture from the left edge to the right edge, packed close together in layers at different depths with no wide gaps of night sky between them, rising from the ground line — which sits in the upper third of the frame — and their tops run past the top edge, so the only sky visible is a narrow strip along the very top. The skyline is lit across its whole width: windows, signs and billboards glow from one edge of the frame to the other. Large patches of empty dark sky between the buildings are the wrong picture, and so is a thin strip of distant buildings low in the frame.",
 };
 
 /**
@@ -51,7 +63,7 @@ const launchOpenings: Record<Environment, string> = {
   desert:
     "The light burns low across the open sand as heat haze shimmers over the distant dunes, fine dust drifting slowly far ahead, the ruins on the horizon resolving slowly out of the glare",
   city:
-    "The neon glow deepens over the wet city as distant traffic trails slide slowly through the rain and window lights flicker far away across the skyline",
+    "The neon glow deepens across the skyline above the avenue as distant traffic trails slide slowly through the rain and window lights flicker from the towers",
   forest:
     "Fog drifts slowly between the distant trunks as shafts of light move across the far canopy and fireflies gather in the depth of the forest",
 };
@@ -196,8 +208,14 @@ const eventFragments: Record<Environment, Partial<Record<WorldEvent["type"], str
     combo_milestone: "Distant billboards and windows react to the impossible combo.",
     damage_taken: "Emergency lights activate across the city.",
     speed_milestone: "Neon lights stretch through the rain as the city accelerates.",
+    // A city-wide blackout used to live here, and it was the wrong event in the wrong slot: a
+    // `distance_milestone` fires every 50 m, so the city was asked to switch its own lights off again
+    // and again through a run — which is how the neon world ended up reading as a dark sky with a few
+    // lit windows, the very complaint the composition clause above was written for. The blackout is
+    // the *hazard* (see `hazard_started`), on its own schedule with its own warning; a routine
+    // milestone gets what the desert and the forest get — a landmark revealed, something added.
     distance_milestone:
-      "A city-wide blackout begins far ahead, leaving only emergency lights and headlights, with no camera move to reveal it.",
+      "A vast district of lit towers and billboards becomes visible far ahead on the same horizon line, more skyline rising over the distance, with no camera move to reveal it.",
     value_tier:
       "Every billboard and window ahead flares at once and the far skyline lights up gold, the city throwing its light across the distant streets without any change to the camera's height or angle.",
     powerup_collected:
@@ -330,6 +348,11 @@ export function eventPrompt(state: RunState, event: WorldEvent, view?: WorldView
     `The run is ${Math.round(state.distance)} meters in, and the camera height, angle and horizon line are unchanged.`,
     escalation,
     custom ? customEmptyFrame : emptyFrame,
+    // The composition, re-asserted on every event, not only at the opening: the city's clause is the
+    // one prompt content that describes where things sit in the frame, and a long run is exactly when
+    // a model drifts back to its default "mostly night" reading. The horizon hold alone cannot catch
+    // that — a horizon in the upper third with a huge sky above it satisfies every clause but this one.
+    custom ? undefined : environmentFraming[state.environment],
     `Preserve the same environment and camera direction. ${cameraDirection}`,
     "Apply this change as a smooth visual evolution rather than a hard cut.",
   ]

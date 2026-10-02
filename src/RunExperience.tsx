@@ -683,6 +683,15 @@ export default function RunExperience({ environment, characterId, onExit, leavin
           its own and has nothing to keep in sync.
         */}
         <div className="hazard-layer" aria-hidden="true" />
+        {/*
+          The desert's wind-up, over the weather scrim: the streaks that rise before a gust takes a
+          lane. `--gust` is the simulation's own lead (0..1) and `data-gust-dir` is the lane it will
+          take, so like the scrim it is inert — the storm announces itself through `:root`, and this
+          only draws it. It exists because a shove is the one hazard the player has to *answer*: a
+          lane that changes with no cue reads as the game moving the runner, which is how it was
+          reported before there was a wind-up to see.
+        */}
+        <div className="gust-layer" aria-hidden="true" />
         <RunnerScene
           environment={environment}
           characterId={characterId}
@@ -858,6 +867,12 @@ export default function RunExperience({ environment, characterId, onExit, leavin
             <span className="hud-hazard" data-phase={weather.phase} title={HAZARD_VERBS[weather.kind].does}>
               <b>{weather.name}</b>
               <small>{weather.phase === "warning" ? "incoming" : HAZARD_VERBS[weather.kind].here}</small>
+              {/* The gust's own wind-up, which the badge could not say until now: the weather *is*
+                  here, and the next lane it takes is 18 m off. Both the word and the arrow are CSS
+                  content, and `--gust` keeps them out of the way while the wind is quiet — an empty
+                  element whose whole message is drawn by the stylesheet is the one shape that cannot
+                  be read as text out of context (the probes read this badge). */}
+              <i className="hud-gust" aria-hidden="true" />
             </span>
           )}
           {/* Nothing is reserved for the pickups: the row only grows when a run has one running, so a

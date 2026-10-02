@@ -45,8 +45,10 @@ the landscape behind the runner is different every second, every run and every w
 exists before Start is pressed.
 
 **One uninterrupted generation, for as long as the visit lasts.** One session is created for the world
-a run asks for and kept for the whole visit: the menu stages the run, the world is asked for at Start,
-and it stays warm for 60 s after a run ends so going straight back in skips the wait. The model streams in
+a run asks for and kept for as long as that world is the one being played: the menu stages the run, the
+world is asked for at Start, and it stays warm for 60 s after a run ends so going straight back in
+skips the wait. A run in a *different* world is a rebuild (see below), which restarts the session
+rather than steering it. The model streams in
 chunks — a chunk of frames every 1.5–2 s, forever — and the game never waits on one: the runner, the
 road and the content field are local and run at full frame rate over whatever frame is on screen, so a
 late chunk is a world catching up rather than a game stuttering. There is no seam to loop and no length
@@ -111,15 +113,27 @@ ready, so the menu was buying frames nobody was playing. Pressing Start opens `s
 which asks Orbis for the world and waits for it on screen.
 
 That wait is the one real cost of the arrangement, so it is a surface rather than a disabled button.
-The loader names the step Orbis is on — connecting, generating, pinning a landscape, arming — from the
-session's own snapshot, counts the seconds, and falls back to a playable local-world run at 55 s
-(20 s once Orbis has reported an error, since a busy account is not something waiting fixes). The
-world keeps being retried behind the run, so a late arrival still lands mid-run.
+The loader names the step Orbis is on — connecting, generating, pinning a landscape or rebuilding the
+world, arming — from the session's own snapshot, counts the seconds, and falls back to a playable
+local-world run at 55 s (20 s once Orbis has reported an error, since a busy account is not something
+waiting fixes — except while a rebuild is in flight, where the link is *meant* to restart and the run
+waits the full budget). The world keeps being retried behind the run, so a late arrival still lands
+mid-run.
 
 A world that a run has warmed stays warm for **60 s** after it ends (`IDLE_SESSION_CAP_MS`) and is
-hidden with `html[data-surface="menu"]` the whole time: a player who goes straight back into another
-run skips the loading screen entirely, and one who does not is not paying for a menu. Measured cold
+hidden with `html[data-surface="menu"]` the whole time: a player who goes straight back into *the same
+world* skips the loading screen entirely, and one who does not is not paying for a menu. Measured cold
 starts on this stack run 20–40 s, so a grace shorter than that would cost more than it saves.
+
+**Choosing a different world is a rebuild, not a morph.** The session could be re-prompted into the
+new world, and that was the original design — but a prompt is a blend the model reaches over its next
+chunks and the run no longer waits for it: measured on a warm session, the frame was still the old
+world's for the first ten seconds of the new run and only read as the new world at fifteen, by which
+point a third of the run was gone. So a world the session does not hold is rebuilt the way a landscape
+is — `reset`, the conditions, `start` — and the loader holds the run until the rebuilt world has
+produced its first chunk. On a warm session that measured **3.7–7.6 s** across four switches (forest →
+desert and back) — 21 s once through a link that was still reconnecting — against 20–40 s for a cold
+start, and the choice's own storm or fog is therefore on screen from the run's first frames.
 
 The bus is also the single source of truth for the two things that outlive one surface: which world
 and which **landscape** are selected, and what Orbis reports about the session (`state`: started,
@@ -158,13 +172,14 @@ of it. Crossing a quarter announces itself — `VALUE UP · 63 PTS` — so the r
 can feel instead of a decimal quietly changing.
 
 Four kinds of prompt reach the model, and the interface names them instead of leaving it to be
-guessed from the text (`src/orbis/prompt-journal.ts`): `world-morph` keeps the background world
-matching the selected world, `launch` is the run's opening dive, `exit-opening` hands the world back
-to its wide shot, and `run-event` is one gameplay event from the run's director. They are gated so
-they cannot fight: `run-event` belongs to a *channel* that closes the instant the player presses
-Exit (synchronously at the click, not a render later), the launch dive is protected by a 2.4 s quiet
-window, and the morph is a standing state that is never re-issued while a run owns the world — all
-three of those were bugs that only showed up once every ask was journaled with its reason.
+guessed from the text (`src/orbis/prompt-journal.ts`): `world-morph` sets the background world from
+the selected world (it rides with every arming pass — a first build or a rebuild — never on its own),
+`launch` is the run's opening dive, `exit-opening` hands the world back to its wide shot, and
+`run-event` is one gameplay event from the run's director. They are gated so they cannot fight:
+`run-event` belongs to a *channel* that closes the instant the player presses Exit (synchronously at
+the click, not a render later), the launch dive is protected by a 2.4 s quiet window, and the world is
+never rebuilt under a live run — all three of those were bugs that only showed up once every ask was
+journaled with its reason.
 
 The world the model generates is **landscape only**. The runner is the local 3D game's, so the
 prompts never name a subject — no "runner", no "character", no "person" — and they say so out loud:
@@ -194,11 +209,32 @@ showed: "a neon city at night" is, to a model, mostly night, and the city opened
 sky with its skyline far down the frame — the buildings only arrived once the run had gone far enough
 for a distance event to push them there, so the player's first minutes of the city were a sky with no
 city in it. The city therefore carries a composition clause of its own (`environmentFraming` in
-`src/orbis/prompts.ts`), on the opening and the launch alike: street level, the skyline already filling
-the frame edge to edge immediately above the horizon line, the visible sky a narrow band above the
-buildings. It asks for no camera move — the one thing this paragraph exists to forbid — and the near
-ground stays as empty as every other world's, because that band still belongs to the game's road. It is
-a request like the rest of them, so the horizon lock remains the thing that keeps the promise.
+`src/orbis/prompts.ts`), and it has been rewritten twice. The first version asked for "a dense, tall
+skyline … immediately above the horizon line, the visible sky a narrow band above the buildings", and a
+live frame answered with its lit city in the band 58–73%: a horizon below the correction's reach, and
+an empty night sky in the band above the game's own line — the only part of the frame the road does not
+cover. The clause now says which part of the frame each thing owns in the terms a camera actually has:
+the towers own the upper half and their tops pass the top edge, the ground line sits in the upper third,
+the buildings are packed in layers with no wide gaps of night sky between them, and both "a thin strip
+of distant buildings low in the frame" and "large patches of empty dark sky between the buildings" are
+named as the wrong pictures. It is carried by the opening, the launch **and every event prompt** — a long run is
+exactly when a model drifts back to its default reading, and the horizon hold alone cannot catch a
+horizon in the upper third with a huge sky above it. Measured in stages, on the video alone: the broken
+version read the top third at mean luma **19.5**, colour **14,20,34**, p10–p90 **15–22**; the geometry
+fix moved it to **46.9** / **41,45,78** / p90 **103.6**. One frame after that still showed a *single*
+lit cluster with night sky across the rest of the band — the failure a density clause answers — and the
+density pass, measured on the composite (the top fifth of what the player actually sees), read mean
+**59.5**, p50 **42.5**, p90 **140.0**, against the sparse version's **31.3** / **21.1** / **30.0**. It
+is still a request, and the horizon lock remains the thing that enforces the line.
+
+Half of that failure was the framing and half was the *schedule*. A `distance_milestone` fires every
+50 m — routine traffic, not weather — and the city's milestone asked for **a city-wide blackout**: by
+150 m the game had already asked the world to switch its own lights off, and the request repeated at
+every 50 m after that, which is how a neon city becomes a dark sky with a few lit windows. The desert
+and the forest get a landmark revealed at that event; the city's now does too (a lit district opening
+ahead), and the blackout lives
+only where it belongs — the hazard, on its own 240 m-out schedule, with the HUD's warning and its own
+sound.
 
 Prompts are a request, though, and a measured one is kept: `src/orbis/world-align.ts` reads the real
 frames and holds the generated horizon to that line. It finds the generated skyline as the sharpest
@@ -269,16 +305,18 @@ run's speed rather than a cosmetic effect, so the world's scale, the camera's fi
 road scroll, and the approaching obstacles all read as one launch — and the controls are unchanged.
 
 What the launch does not do is hand the player straight to the content: the field opens on empty road.
-`START_CLEARANCE` in `src/game/pattern-field.ts` is where the first chunk is laid — ~32 m past the
-runner, two escape windows, because the launch surge covers those metres faster than any later ones.
+`START_CLEARANCE` in `src/game/pattern-field.ts` is where the first chunk is laid — ~48 m past the
+runner, three escape windows, because the launch surge covers those metres faster than any later ones.
 The field used to start nine metres out, which at the launch's pace is under a second, and a `pair` or
 a wall landing there asks for a lane change the player has not been given the time to read: the first
-thing a fresh run — and a retry, which is the same remount — could teach was that it was unfair. One
-constant covers both starts. Measured live: the first hazard row is 27–29 m ahead on the first
-sampled frame of a fresh run, and the same again after the defeat card's *Run again*, with three pips
-back on the HUD. The opening
-band of the reward curve is quieter as a result — it is where a run is read, not where it is paid —
-while what a token is worth at the line is untouched.
+thing a fresh run — and a retry, which is the same remount — could teach was that it was unfair. Two
+escape windows (32 m) still opened a run on 3.3–3.8 s of road and read as the content arriving on top
+of the player, so the opening is three now: the first row is met 5.0 s into a desert run and 5.6–5.8 s
+into a forest or city one — simulated at 60 Hz against `speedAt` plus `LAUNCH_BOOST`'s decay, the same
+speed model the run itself uses. One constant covers both starts, so the defeat card's *Run again* and
+a deal change open on the same empty road. The opening band of the reward curve is quieter as a
+result — it is where a run is read, not where it is paid — while what a token is worth at the line is
+untouched.
 
 Leaving mirrors arriving: the run pulls back out, the menu reassembles with its own entrance, the
 world is handed back to its wide establishing shot, and it keeps streaming the whole way.
@@ -684,7 +722,7 @@ at the answer while it is happening to them.
 
 | world | hazard | what it attacks |
 | --- | --- | --- |
-| desert | **Sandstorm** | *where you are* — gusts push the runner a whole lane sideways |
+| desert | **Sandstorm** | *where you are* — telegraphed gusts push the runner a whole lane sideways |
 | city | **Blackout** | *what you can see* — the city's power fails and the lane markings go dark |
 | forest | **Fog** | *how far ahead you can plan* — the distance closes in to about 44 m |
 
@@ -707,14 +745,26 @@ and its own sound caption. `npm run check:prompts` builds and scans all of it wi
 push would be a state the simulation does not have (and a runner hanging between two lanes is a
 collision the player cannot reason about). A gust takes a lane and the run has to take it back — and the
 direction alternates with the hazard's index, so a storm walks the runner one way and then the other.
-Measured in one desert storm: four lane changes with no key pressed, alternating 1→0, 0→1, 1→0, 1→2.
+A gust lands every **54 m**, not the first cut's 36: at 36 a single storm landed four or five of them,
+close enough together to read as the game steering rather than as wind. Measured since: one storm's
+lane changes with no key pressed sit 107 m apart — 1→2 at 357 m, 2→1 at 464 m — and the probe reads
+**2/2 wind-ups shown first, 2/2 directions matched** (the press it steered through in between is the
+autopilot's, not the storm's).
+
+**Every gust shows its hand first.** For the last **18 m** before a gust lands the storm is visibly
+winding up: the streak layer sweeps the frame in the direction the lane change will take, and the HUD's
+weather badge grows its own line — `← gust` or `gust →`. The direction is not a hint from a second
+system: it is `gustFor`, the same decision that lands the shove, read every frame against the lane the
+runner is in, so a player who moves during the wind-up sees the arrow move with them and what lands is
+what was shown. A gust that finds both side lanes occupied holds at full wind-up until the road opens:
+not a warning that expires, but a storm leaning on a door it is waiting to open.
 
 **The storm may take a lane; it may not take the lane that kills you.** A gust that lands the runner in
 a lane an obstacle is already standing in is not a hazard, it is a hit the player had no way to answer —
 and it reads as the game moving them into the obstacle rather than as weather. So every gust is checked
-before it lands (`laneClearFor`): if the lane the wind wants has an obstacle within the next 22 m, the
-gust goes the other way; if both side lanes are occupied ahead, the gust is held and lands the moment
-the road opens. The storm still takes a lane — that is the hazard — but it can no longer take the one
+before it lands (`laneClearFor`, inside `gustFor`): if the lane the wind wants has an obstacle within
+the next 22 m, the gust goes the other way; if both side lanes are occupied ahead, the gust is held and
+lands the moment the road opens. The storm still takes a lane — that is the hazard — but it can no longer take the one
 that is already occupied. 22 m is over a second at every world's top speed, so what the player gets is
 a decision rather than a coin flip.
 
@@ -757,7 +807,9 @@ queued, because a distance milestone from four seconds ago is not news.
 restarting through the card when the hazard ends the run, which is allowed to happen — and brackets the
 picture with two clear frames a second apart against the peak frame, so the numbers above are a change
 and not a drift. `window.__runfield()` reports the phase, the intensity, how many hazards the run has
-announced, and the lane, which is where a shove shows up without a key behind it.
+announced, the lane, which is where a shove shows up without a key behind it, and the wind-up a gust
+should have raised before it — and the probe holds every storm shove against the `--gust` lead sampled
+before it, so a lane that changed itself is a fault rather than a note.
 
 ## The skill ceiling
 
@@ -1105,6 +1157,10 @@ session that dropped — which is precisely what an empty `applied` under a live
 `applied` is cleared the moment the link leaves `ready`. Without that exception a recovered link comes
 back connected and silent: the video re-attaches, generation never restarts, and the run finishes in
 the local backdrop with the world reachable the whole time.
+
+A rebuild is the second case the effect runs without a run on screen: a `reset` ends the session it
+was working on, so while the loader is holding a run for a rebuild, that effect is the only thing that
+can bring the link back — the arming pass cannot run until it does.
 
 Measured with the link dropped under a live run (`tools/drop-probe.mjs`): `disconnected` 3 s later
 with the video element unmounted and the run still playing, `ready` at 31 s, the re-arm reaching
@@ -1484,8 +1540,10 @@ node tools/pickup-probe.mjs http://[::1]:5199/            # or WORLD=city, DEADL
 
 `tools/hazard-probe.mjs` does the same for the weather: a run per attempt (restarting through the card,
 because a hazard is allowed to end a run), an autopilot that only *dodges* — so a lane change with no
-key press behind it is unambiguously the storm's — and the HUD badge, the `:root` attributes, the feed
-and the lane read from `window.__runfield()` as it goes. Its frames are a bracket: two clear ones
+key press behind it is unambiguously the storm's — and the HUD badge, the `:root` attributes (including
+the `--gust` wind-up and its direction), the feed and the lane read from `window.__runfield()` as it
+goes. The wind-up is checked rather than admired: every storm shove has to find a `--gust` lead in the
+samples before it, or the run reports a lane that changed itself. Its frames are a bracket: two clear ones
 1.2 s apart for the world's own drift, one at the peak, one after it has passed if the run lived. It
 ends with the `frame-report.mjs` lines that turn the bracket into the numbers quoted above.
 
@@ -1537,6 +1595,21 @@ only honest evidence that frames are being produced again rather than that a med
 
 ```bash
 node tools/drop-probe.mjs http://[::1]:5199/
+```
+
+`tools/switch-probe.mjs` is about the one path where the wrong world can reach the player: a run in a
+world the session does not hold. It plays one world, exits to the menu, starts another, and reads both
+halves of the answer — the page's own prompt journal (which world was asked for) and the frames
+themselves, classified by their own colour (a dusk desert is strongly warm, an old forest is cool
+grey-green), because the session says `streaming` long before it shows the world the player chose. It
+is the probe that caught the bug it exists for: a prompt alone left the old world on screen for the
+first ten seconds of the new run, so a world change is now a rebuild. `WORLD_A` and `WORLD_B` pick the
+two worlds; setting them to the same world checks the opposite claim — a warm restart, built nothing,
+instant.
+
+```bash
+WORLD_A=forest WORLD_B=desert node tools/switch-probe.mjs http://[::1]:5199/
+WORLD_A=forest WORLD_B=forest node tools/switch-probe.mjs http://[::1]:5199/   # the warm restart
 ```
 
 `tools/frame-report.mjs` has a mode per question: `--cliff shot.png` prints the row-brightness profile

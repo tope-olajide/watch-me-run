@@ -60,8 +60,27 @@ const SPACING_SLOPE = 140;
 const ACTIVE_SLOPE = 60;
 /** Never let the quiet between two hazards disappear: a world that is always storming is wallpaper. */
 const QUIET_FLOOR = 90;
-/** Metres between one shove and the next, inside a sandstorm. */
-export const WIND_METRES = 36;
+/**
+ * Metres between one shove and the next, inside a sandstorm.
+ *
+ * The first cut took a lane every 36 m — four or five gusts in one storm, close enough together that
+ * the run was being steered by the weather more than by the player, and close enough (measured in
+ * play) to read as the game moving the runner rather than as wind. 54 m is a gust every three to six
+ * seconds: the storm still owns the lane rhythm, and there is room between gusts for the run to answer
+ * the last one before the next wind-up starts.
+ */
+export const WIND_METRES = 54;
+
+/**
+ * How far before a gust lands its wind-up starts.
+ *
+ * Every gust is shown before it takes the lane: from this distance the streaks are up, the HUD names
+ * it, and the direction on screen is the lane the gust will actually take. 18 m is over a second at
+ * the fastest world's top speed and over two at the opening pace — the same decision window the grab
+ * rules are keyed to (`ESCAPE_DISTANCE` is 16 m) — so what the storm is about to do is a thing the
+ * player had time to read rather than a lane that changed itself.
+ */
+export const WIND_LEAD_METRES = 18;
 
 const CALM: HazardState = { kind: "shove", name: "", phase: "calm", intensity: 0, since: 0, index: 0 };
 
@@ -130,6 +149,20 @@ export function shovesFor(since: number): number {
   return Math.floor(since / WIND_METRES);
 }
 
+/**
+ * How far through its wind-up the next gust is: 0 while the wind is quiet, 1 as it lands.
+ *
+ * `shoves` is how many gusts have already landed, which matters for the one case the schedule alone
+ * cannot describe: a gust that found both side lanes occupied is still owed — it holds at full
+ * wind-up until the road opens rather than being spent or landing unwarned.
+ */
+export function gustLead(since: number, shoves: number): number {
+  const due = shovesFor(since);
+  if (shoves < due) return 1;
+  const gap = (due + 1) * WIND_METRES - since;
+  return gap >= WIND_LEAD_METRES ? 0 : 1 - gap / WIND_LEAD_METRES;
+}
+
 export function windFor(index: number, shove: number): -1 | 1 {
   return (index + shove) % 2 === 0 ? -1 : 1;
 }
@@ -196,4 +229,24 @@ export function publishHazard(state: HazardState): void {
     lastIntensity = state.intensity;
     root.style.setProperty("--weather", state.intensity.toFixed(3));
   }
+}
+
+/* ---- the gust's wind-up, published the same way -------------------------------------------------
+ *
+ * The desert's gusts are the one hazard with a rhythm inside the hazard, so they need a channel of
+ * their own: the scrim answers "the storm is here", and these two answer "and it is about to take a
+ * lane — this one". `--gust` is the lead (0..1, see `gustLead`) and drives the streaks' and the HUD
+ * line's opacity; `data-gust-dir` is the lane it will take, which is what the streak sweep reads.
+ * Written from the frame loop, so real changes only, for the same reason as `--weather`.
+ */
+let lastGustLead = -1;
+
+export function publishGust(lead: number, dir: -1 | 1): void {
+  if (Math.abs(lead - lastGustLead) < 0.02) return;
+  lastGustLead = lead;
+  const root = document.documentElement;
+  root.style.setProperty("--gust", lead.toFixed(3));
+  // Deliberately not cleared when the lead ends: the layers fade out through their own CSS
+  // transitions, and a direction that vanished mid-fade would flip the streaks as they leave.
+  if (lead > 0) root.dataset.gustDir = dir < 0 ? "left" : "right";
 }

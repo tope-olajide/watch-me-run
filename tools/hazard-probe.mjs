@@ -16,8 +16,9 @@
 // What is recorded:
 //   - `window.__runfield()` sampled every 150 ms: the phase, its intensity, how many hazards the run
 //     announced, and the lane, which is where a shove shows up;
-//   - the HUD's `.hud-hazard` badge and the `:root` attributes the weather publishes, so "the player
-//     was told" is a reading rather than an intention;
+//   - the HUD's `.hud-hazard` badge and the `:root` attributes the weather publishes — including the
+//     `--gust` wind-up and `data-gust-dir` a desert storm raises before each shove — so "the player
+//     was told" is a reading rather than an intention, and a lane that changed itself is a fault;
 //   - the director feed, sampled from the DOM as well as watched for insertions, because the feed is
 //     three deep and an entry can be born and evicted inside one commit;
 //   - frames, as a bracket: two clear ones 1.2 s apart (the world's own drift), one at the peak of the
@@ -279,6 +280,9 @@ try {
       let myLane = 1;
       let previousPhase = null;
       let clearPair = 0;
+      // The last wind-up the storm was showing, kept with its own clock: a shove has to find one of
+      // these within the couple of seconds before it lands, or it is a lane that changed itself.
+      let shown = { lead: 0, dir: "", at: 0 };
       const deadline = Date.now() + RUN_MS;
 
       while (Date.now() < deadline) {
@@ -291,9 +295,12 @@ try {
           kind: document.documentElement.dataset.hazard ?? "",
           phase: document.documentElement.dataset.hazardPhase ?? "",
           weather: Number(document.documentElement.style.getPropertyValue("--weather") || 0),
+          gust: Number(document.documentElement.style.getPropertyValue("--gust") || 0),
+          gustDir: document.documentElement.dataset.gustDir ?? "",
           badge: document.querySelector(".hud-hazard")?.textContent?.trim().replace(/\\s+/g, " ") ?? null,
           over: Boolean(document.querySelector(".run-over-card")),
         }))()`);
+        if (css.gust >= 0.5) shown = { lead: css.gust, dir: css.gustDir, at: Date.now() };
 
         run.fired = field.hazardFired;
 
@@ -301,7 +308,17 @@ try {
         lane = field.lane;
         if (from !== null && lane !== from && field.hazard.phase === "active") {
           const mine = Date.now() - lastPress < 400;
-          run.shoves.push({ distance: field.distance, from, to: lane, mine, intensity: field.hazard.intensity });
+          const way = lane > from ? "right" : "left";
+          const warned = !mine && shown.lead >= 0.5 && Date.now() - shown.at < 2000;
+          run.shoves.push({
+            distance: field.distance,
+            from,
+            to: lane,
+            mine,
+            intensity: field.hazard.intensity,
+            warned,
+            telegraphed: warned && shown.dir === way,
+          });
         }
 
         if (field.hazard.phase !== previousPhase || !run.phases.length) {
@@ -372,7 +389,9 @@ try {
           ` | fired ${run.fired} | answered ${run.answered ? `yes (${run.answer ?? "seen in the DOM"})` : "no"} | frames ${Object.keys(run.frames).join("+") || "none"}`,
       );
       console.log(`  feed: ${run.feedLines.join(" | ") || "(none)"}`);
-      console.log(`  shoves: ${run.shoves.map((shove) => `${shove.distance}m ${shove.from}→${shove.to}${shove.mine ? " (probe)" : " (storm)"}`).join(", ") || "(none)"}`);
+      console.log(
+        `  shoves: ${run.shoves.map((shove) => `${shove.distance}m ${shove.from}→${shove.to}${shove.mine ? " (probe)" : shove.telegraphed ? " (storm, wind-up)" : shove.warned ? " (storm, wind-up, direction differs)" : " (storm, NO WIND-UP)"}`).join(", ") || "(none)"}`,
+      );
 
       const stormShoves = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => !shove.mine).length, 0);
       const answered = evidence.some((entry) => entry.answered);
@@ -407,6 +426,8 @@ try {
     const answered = evidence.some((entry) => entry.answered);
     const bracketed = evidence.find((entry) => entry.frames.clear && entry.frames.peak);
     const stormShoves = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => !shove.mine).length, 0);
+    const warned = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => !shove.mine && shove.warned).length, 0);
+    const telegraphed = evidence.reduce((total, entry) => total + entry.shoves.filter((shove) => shove.telegraphed).length, 0);
     const kindsSeen = [...new Set(evidence.flatMap((entry) => entry.phases.map((phase) => phase.kind)).filter(Boolean))];
     const warnings = evidence.filter((entry) => entry.phases.some((phase) => phase.phase === "warning")).length;
     const badges = [...new Set(evidence.flatMap((entry) => entry.badges.map((badge) => badge.badge)))];
@@ -415,7 +436,7 @@ try {
     console.log(`  weather seen: ${kindsSeen.join(", ") || "(none)"} | runs with a warning: ${warnings}/${evidence.length}`);
     console.log(`  badges seen: ${badges.join(" | ") || "(none)"}`);
     console.log(`  the world answered: ${answered ? "yes" : "no"}`);
-    console.log(`  shoves with no key pressed: ${stormShoves}`);
+    console.log(`  shoves with no key pressed: ${stormShoves} | wind-up shown first: ${warned}/${stormShoves} | direction matched: ${telegraphed}/${warned}`);
     console.log(`  fired per run: ${evidence.map((entry) => entry.fired).join(", ")}`);
     if (bracketed) {
       console.log(`  bracket (run ${bracketed.attempt}):`);
@@ -432,6 +453,9 @@ try {
     if (!badges.some((badge) => /incoming/i.test(badge))) faults.push(`${world}: the HUD never warned about the hazard`);
     if (!bracketed) faults.push(`${world}: no clear/peak frame pair was captured`);
     if (world === "desert" && stormShoves < 2) faults.push(`desert: the storm moved the runner ${stormShoves} times`);
+    if (world === "desert" && stormShoves > warned) {
+      faults.push(`desert: ${stormShoves - warned} gust(s) landed with no wind-up before them`);
+    }
 
     if (WORLDS.length > 1) {
       await clickAt(".quiet-button");
